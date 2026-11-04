@@ -16,8 +16,8 @@ import { promisify } from "util";
  * developer's own typing, or a card Claude wrote, so this guards against a
  * mistake rather than an attacker, but `system("rm -rf ~")` should cost nothing
  * either way. The limits are for the same mistakes: a recursive fork, a file
- * written in a loop. They are per process and per file, not a quota on the
- * whole of /dev, which the timeout bounds well enough for a mistake.
+ * written in a loop: per process and per file, and each place a file can go (/tmp,
+ * /dev/shm) has a size of its own.
  *
  * A timeout kills the whole tree: bubblewrap's PID namespace dies with it. The
  * run's verdict comes back on a pipe of its own (fd 3), so nothing the code
@@ -161,7 +161,13 @@ function bubblewrapArgv(ruby: string, workDir: string): string[] {
     "--symlink", "usr/bin", "/bin",
     "--ro-bind-try", "/etc/ssl", "/etc/ssl",
     "--proc", "/proc",
+    // /dev is bubblewrap's tmpfs, as large as half the RAM and writable, and /dev/shm
+    // in it too: a loop writing there is no part of any quota. So /dev/shm gets a
+    // size, and the rest of /dev, device nodes only, is read-only. Writing to
+    // /dev/null still works on a read-only mount.
     "--dev", "/dev",
+    "--size", String(TMPFS_BYTES), "--tmpfs", "/dev/shm",
+    "--remount-ro", "/dev",
     "--size", String(TMPFS_BYTES), "--tmpfs", "/tmp",
     "--ro-bind", workDir, "/exercise",
     "--chdir", "/tmp",

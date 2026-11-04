@@ -263,6 +263,15 @@ describe("the sandbox", () => {
     delete process.env.SECRET_FOR_TEST;
   });
 
+  it("leaves nothing of the environment in the sandbox's own PID 1, either", async () => {
+    process.env.SECRET_FOR_TEST = "canary-4f2a9";
+    const found = await evaluate(
+      'Dir.children("/proc").grep(/\\A\\d+\\z/).any? { |pid| File.binread("/proc/#{pid}/environ").include?("canary-4f2a9") rescue false }'
+    );
+    delete process.env.SECRET_FOR_TEST;
+    expect(found).toBe("false");
+  });
+
   it("has no network", async () => {
     const shown = await evaluate(
       'require "socket"; begin; TCPSocket.new("1.1.1.1", 80); rescue => e; e.class; end'
@@ -301,6 +310,15 @@ describe("the sandbox", () => {
   it("limits forks and the size of a file", async () => {
     expect(await evaluate("Process.getrlimit(:NPROC).first")).toBe("64");
     expect(await evaluate("Process.getrlimit(:FSIZE).first")).toBe(String(16 * 1024 * 1024));
+  });
+
+  it("has no room to fill outside /tmp and /dev/shm, and those are small", async () => {
+    expect(await evaluate('begin; File.write("/dev/x", "y"); rescue => e; e.class; end')).toBe("Errno::EROFS");
+    const fill = await evaluate(
+      'begin; 4.times { |i| File.write("/dev/shm/f#{i}", "x" * (6 * 1024 * 1024)) }; :wrote; rescue => e; e.class; end'
+    );
+    expect(fill).toBe("Errno::ENOSPC");
+    expect(await evaluate('File.write("/dev/null", "x")')).toBe("1");
   });
 
   it("cuts a huge value down, and keeps text whole", async () => {

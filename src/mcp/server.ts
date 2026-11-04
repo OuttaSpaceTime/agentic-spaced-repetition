@@ -295,7 +295,7 @@ export function createServer(): McpServer {
         back: z
           .string()
           .describe(
-            "Answer side, as simple HTML with the same format rules as front. Rejected above 200 visible characters or 4 sentences; markup does not count toward either limit."
+            "Answer side, as simple HTML with the same format rules as front. Rejected above 150 visible characters or 3 sentences; markup does not count toward either limit."
           ),
         tags: z.array(z.string()).optional(),
         type: z

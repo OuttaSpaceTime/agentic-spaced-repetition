@@ -17,8 +17,12 @@ import { CLOZE_MARKUP } from "./cloze.js";
  * validators are exported so the tests can exercise each rule on its own.
  */
 
-export const MAX_ANSWER_CHARS = 200;
-const MAX_ANSWER_SENTENCES = 4;
+// 200 and 4 until 2026-11-04. On the deck's own cards, backs over 150 characters carried a fact the front had not
+// asked for 55% of the time, against 3% under 100, and a size rule catches that for nothing, before the study repo's
+// gate spends a judge on it. Lower would refuse the two-step causal answers a "why" needs. Existing cards are not
+// touched: the limits apply when a back is next written.
+export const MAX_ANSWER_CHARS = 150;
+const MAX_ANSWER_SENTENCES = 3;
 
 interface Rule {
   pattern: RegExp;

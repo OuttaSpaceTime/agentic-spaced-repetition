@@ -158,14 +158,14 @@ describe("answer length limit", () => {
   });
 
   it("rejects too many sentences even when under the char limit", () => {
-    const stacked = "One. Two. Three. Four. Five.";
+    const stacked = "One. Two. Three. Four.";
     expect(stacked.length).toBeLessThan(MAX_ANSWER_CHARS);
     expect(validateAnswer(stacked)).toHaveLength(1);
     expect(validateAnswer(stacked)[0]).toMatch(/sentence/i);
   });
 
   it("accepts an answer at exactly the sentence limit", () => {
-    expect(validateAnswer("One. Two. Three. Four.")).toEqual([]);
+    expect(validateAnswer("One. Two. Three.")).toEqual([]);
   });
 
   it("catches a long single sentence that a sentence rule alone would miss", () => {

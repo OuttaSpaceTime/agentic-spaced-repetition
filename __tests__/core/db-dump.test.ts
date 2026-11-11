@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execSync } from "child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import Database from "better-sqlite3";
@@ -127,5 +127,20 @@ describe("restoreDatabase", () => {
     dumpDatabase(srcDb, dumpFile);
     restoreDatabase(restoreDb, dumpFile, {});
     expect(() => restoreDatabase(restoreDb, dumpFile, { force: true })).not.toThrow();
+  });
+
+  it("keeps the existing database when a forced restore's dump is broken", () => {
+    dumpDatabase(srcDb, dumpFile);
+    restoreDatabase(restoreDb, dumpFile, {});
+    const broken = join(workDir, "broken.sql");
+    writeFileSync(broken, readFileSync(dumpFile, "utf-8").slice(0, 600));
+
+    expect(() => restoreDatabase(restoreDb, broken, { force: true })).toThrow();
+
+    const db = new Database(restoreDb, { readonly: true });
+    const n = (db.prepare("SELECT COUNT(*) AS n FROM Card").get() as { n: number }).n;
+    db.close();
+    expect(n).toBe(1);
+    expect(existsSync(`${restoreDb}.restoring`)).toBe(false);
   });
 });

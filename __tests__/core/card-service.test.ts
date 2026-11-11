@@ -8,6 +8,7 @@ import {
   suspendCard,
   unsuspendCard,
   searchCards,
+  allCards,
   listCards,
   countDueCards,
 } from "../../src/core/card-service.js";
@@ -386,6 +387,18 @@ describe("card-service", () => {
 
       const results = await listCards({});
       expect(results.length).toBe(2);
+    });
+
+    it("leaves the embedding column out of listings", async () => {
+      const card = await createCard({ deckId: testDeckId, front: "Q1", back: "A1", tags: ["x"] });
+      await getDb().card.update({ where: { id: card.card.id }, data: { embedding: "[0.1]" } });
+
+      for (const list of [listCards({}), listCards({ tagFilter: "x" }), searchCards("Q1"), allCards()]) {
+        const [found] = await list;
+        expect(found.id).toBe(card.card.id);
+        expect(found).not.toHaveProperty("embedding");
+        expect(found.deck.name).toBeDefined();
+      }
     });
 
     it("tagFilter='empty' returns only untagged cards", async () => {

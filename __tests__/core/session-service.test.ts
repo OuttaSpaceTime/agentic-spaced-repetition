@@ -385,6 +385,32 @@ describe("session-service", () => {
       expect(await getDb().review.count()).toBe(0);
     });
 
+    it("refuses a second review of the same card and writes nothing", async () => {
+      await seedCards(2);
+      const session = await startSession();
+      const first = await getNextCard(session.id);
+      await submitReview(session.id, first!.id, Rating.Good);
+      const db = getDb();
+      const before = await db.card.findUnique({ where: { id: first!.id } });
+
+      await expect(submitReview(session.id, first!.id, Rating.Good)).rejects.toThrow(/not the session's current card/);
+
+      expect(await db.review.count()).toBe(1);
+      expect(await db.card.findUnique({ where: { id: first!.id } })).toEqual(before);
+      expect((await db.studySession.findUnique({ where: { id: session.id } }))!.cardsReviewed).toBe(1);
+      // The next card was not passed over.
+      expect((await getNextCard(session.id))!.id).not.toBe(first!.id);
+      expect((await getQueuePosition(session.id))!.position).toBe(2);
+    });
+
+    it("refuses a card that is not the one at the pointer", async () => {
+      const [, second] = await seedCards(2);
+      const session = await startSession();
+      await getNextCard(session.id);
+      await expect(submitReview(session.id, second.id, Rating.Good)).rejects.toThrow(/current card/);
+      expect(await getDb().review.count()).toBe(0);
+    });
+
     it("schedules at the saved request retention", async () => {
       const reviewCardAt = async (requestRetention: number) => {
         await getDb().config.upsert({
@@ -835,6 +861,27 @@ describe("undoLastReview", () => {
     expect((await getQueuePosition(session.id))!.position).toBe(1);
     // The Again's learning repeat went with it.
     expect((await getQueuePosition(session.id))!.total).toBe(2);
+  });
+
+  it("keeps the record when its transaction fails, so a second undo works", async () => {
+    await seedCards(1);
+    const session = await startSession();
+    const c = await getNextCard(session.id);
+    await submitReview(session.id, c!.id, Rating.Again);
+    // Fail the next transaction only (a Prisma client's methods can't be spied and restored).
+    const db = getDb() as unknown as { $transaction: unknown };
+    const real = db.$transaction;
+    db.$transaction = () => Promise.reject(new Error("database is busy"));
+
+    try {
+      await expect(undoLastReview(session.id)).rejects.toThrow(/busy/);
+    } finally {
+      db.$transaction = real;
+    }
+    expect(await getDb().review.count()).toBe(1);
+
+    expect((await undoLastReview(session.id))!.cardId).toBe(c!.id);
+    expect(await getDb().review.count()).toBe(0);
   });
 
   it("goes back several reviews, newest first, then has none left", async () => {

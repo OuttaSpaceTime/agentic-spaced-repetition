@@ -388,8 +388,11 @@ export async function previewSchedules(
 /**
  * Record a rating: reschedule the card, log the review, advance the session.
  * Refused unless the session is open (an ended, exhausted or unknown session
- * has no queue to advance and no accuracy to keep). The three writes are one
- * transaction, so a failure leaves none of them behind.
+ * has no queue to advance and no accuracy to keep) and unless `cardId` is the
+ * card at the queue's pointer: a retried submit would otherwise schedule the card
+ * twice and pass the next one over unseen. Undo restores the pointer, so a redo
+ * passes. The three writes are one transaction, so a failure leaves none of them
+ * behind.
  */
 export async function submitReview(
   sessionId: string,
@@ -400,6 +403,9 @@ export async function submitReview(
   const state = await loadState(sessionId);
   if (state === undefined) {
     throw new Error(`Session ${sessionId} is not open: it was ended, ran out of cards, or does not exist`);
+  }
+  if (state.queue[state.pointer]?.cardId !== cardId) {
+    throw new Error(`Card ${cardId} is not the session's current card: it was already reviewed, or is not next in the queue`);
   }
 
   const db = getDb();
@@ -516,17 +522,24 @@ export async function undoLastReview(
   const db = getDb();
   const undos = reviewUndos.get(sessionId) ?? [];
   for (let undo = undos.pop(); undo !== undefined; undo = undos.pop()) {
-    const card = await db.card.findUnique({ where: { id: undo.cardId }, select: { updatedAt: true } });
-    if (card == null) continue;
+    // Popped up front so two undos at once take two records; a failure puts it back,
+    // since a busy database must leave the rating undoable by a second try.
+    try {
+      const card = await db.card.findUnique({ where: { id: undo.cardId }, select: { updatedAt: true } });
+      if (card == null) continue;
 
-    await db.$transaction([
-      db.card.update({ where: { id: undo.cardId }, data: { ...undo.card, updatedAt: card.updatedAt } }),
-      db.review.deleteMany({ where: { id: undo.reviewId } }),
-      db.studySession.update({
-        where: { id: sessionId },
-        data: { ...undo.session, endTime: null, queueState: undo.state },
-      }),
-    ]);
+      await db.$transaction([
+        db.card.update({ where: { id: undo.cardId }, data: { ...undo.card, updatedAt: card.updatedAt } }),
+        db.review.deleteMany({ where: { id: undo.reviewId } }),
+        db.studySession.update({
+          where: { id: sessionId },
+          data: { ...undo.session, endTime: null, queueState: undo.state },
+        }),
+      ]);
+    } catch (e) {
+      undos.push(undo);
+      throw e;
+    }
     const state = JSON.parse(undo.state) as SessionState;
     sessions.set(sessionId, state);
 

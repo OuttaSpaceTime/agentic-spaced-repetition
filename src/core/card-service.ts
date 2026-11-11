@@ -58,9 +58,10 @@ interface CreateCardResult {
   duplicateWarning?: DuplicateCheckResult;
 }
 
-export type CardWithDeck = PrismaCard & { deck: { name: string } };
+/** Listings leave the embedding out: a 384-float JSON string per card that no caller reads. */
+export type CardWithDeck = Omit<PrismaCard, "embedding"> & { deck: { name: string } };
 
-const WITH_DECK_NAME = { deck: { select: { name: true } } } as const;
+const WITH_DECK_NAME = { include: { deck: { select: { name: true } } }, omit: { embedding: true } } as const;
 
 /** Stored embeddings cover front and back, so every query embedding does too. */
 function cardEmbeddingText(front: string, back: string): string {
@@ -373,11 +374,11 @@ async function findCards(
 ): Promise<CardWithDeck[]> {
   const db = getDb();
   if (tags.length === 0) {
-    return db.card.findMany({ where, include: WITH_DECK_NAME, orderBy, skip: offset, take: limit });
+    return db.card.findMany({ where, ...WITH_DECK_NAME, orderBy, skip: offset, take: limit });
   }
   const candidates = await db.card.findMany({
     where: { ...where, AND: tags.map((tag) => ({ tags: { contains: tag } })) },
-    include: WITH_DECK_NAME,
+    ...WITH_DECK_NAME,
     orderBy,
     take: (offset + limit) * 4,
   });
@@ -460,7 +461,7 @@ export async function getDueCards(limit: number = 30): Promise<CardWithDeck[]> {
   const db = getDb();
   return db.card.findMany({
     where: dueWhere(),
-    include: WITH_DECK_NAME,
+    ...WITH_DECK_NAME,
     take: limit,
     orderBy: { due: "asc" },
   });
@@ -473,7 +474,7 @@ export async function countDueCards(): Promise<number> {
 
 /** Every card with its deck name, newest first. */
 export async function allCards(): Promise<CardWithDeck[]> {
-  return getDb().card.findMany({ include: WITH_DECK_NAME, orderBy: { createdAt: "desc" } });
+  return getDb().card.findMany({ ...WITH_DECK_NAME, orderBy: { createdAt: "desc" } });
 }
 
 /**

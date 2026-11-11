@@ -76,7 +76,7 @@ export interface AppCard {
 
 // The sides as they read. A code card's blanks are hidden on the front and shown
 // on the back, so the app's every view of a card needs no idea of clozes.
-export function toAppCard(card: PrismaCard, deck: string): AppCard {
+export function toAppCard(card: Omit<PrismaCard, "embedding">, deck: string): AppCard {
   const exercise = parseExercise(card.exercise);
   return {
     id: card.id,

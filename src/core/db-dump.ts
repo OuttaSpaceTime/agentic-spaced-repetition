@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "fs";
+import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync, renameSync } from "fs";
 import { dirname } from "path";
 
 interface MasterRow {
@@ -100,6 +100,11 @@ export function dumpDatabase(dbPath: string, outPath: string): DbFileStats {
   }
 }
 
+/**
+ * Restores a dump into dbPath. The database is built in `<dbPath>.restoring`
+ * and renamed over the target only once the whole dump has run, so a truncated
+ * or wrong dump leaves an existing database (with force) exactly as it was.
+ */
 export function restoreDatabase(
   dbPath: string,
   sqlPath: string,
@@ -108,21 +113,24 @@ export function restoreDatabase(
   if (!existsSync(sqlPath)) {
     throw new Error(`SQL dump not found: ${sqlPath}`);
   }
-  if (existsSync(dbPath)) {
-    if (!force) {
-      throw new Error(
-        `Refusing to overwrite existing database: ${dbPath} (pass force:true / --force to override)`,
-      );
-    }
-    for (const suffix of ["", "-journal", "-wal", "-shm"]) {
-      rmSync(dbPath + suffix, { force: true });
-    }
+  if (existsSync(dbPath) && !force) {
+    throw new Error(
+      `Refusing to overwrite existing database: ${dbPath} (pass force:true / --force to override)`,
+    );
   }
 
   mkdirSync(dirname(dbPath), { recursive: true });
   const sql = readFileSync(sqlPath, "utf-8");
 
-  const db = new Database(dbPath);
+  const tmpPath = `${dbPath}.restoring`;
+  const sides = ["-journal", "-wal", "-shm"];
+  const removeAll = (path: string) => {
+    for (const suffix of ["", ...sides]) rmSync(path + suffix, { force: true });
+  };
+  removeAll(tmpPath); // a stale one from an earlier failed run
+
+  let stats: DbFileStats;
+  const db = new Database(tmpPath);
   try {
     db.exec(sql);
     const tableNames = (
@@ -139,8 +147,17 @@ export function restoreDatabase(
         .get() as { n: number };
       rows += r.n;
     }
-    return { tables: tableNames.length, rows };
-  } finally {
+    stats = { tables: tableNames.length, rows };
     db.close();
+  } catch (err) {
+    db.close();
+    removeAll(tmpPath);
+    throw err;
   }
+
+  // The old file's side files must go first or SQLite would replay them onto the new file.
+  for (const suffix of sides) rmSync(dbPath + suffix, { force: true });
+  renameSync(tmpPath, dbPath);
+  for (const suffix of sides) rmSync(tmpPath + suffix, { force: true });
+  return stats;
 }

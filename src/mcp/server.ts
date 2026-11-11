@@ -45,6 +45,7 @@ import { listCardNotes, resolveCardNote } from "../core/card-notes.js";
 import { PACKAGE_VERSION } from "../core/version.js";
 import {
   EXERCISE_KINDS,
+  LANGS,
   checkExercise,
   exerciseView,
   parseExercise,
@@ -59,7 +60,11 @@ const EXERCISE_SCHEMA = z.object({
     .describe(
       "predict: read the code and type what each case's expr evaluates to (Anki: cloze). fill: complete the blanks in the source so each expr equals its goal (Anki: cloze). compose: the same with bigger pieces put together (Anki: front and back)."
     ),
-  lang: z.literal("ruby"),
+  lang: z
+    .enum(LANGS)
+    .describe(
+      "What runs it. ruby, python, javascript: cases are expressions, compared as values. typescript: type-checked with tsc --strict first, then run; a type error stops before any case. postgres: source is SQL that sets up an empty database, each case's expr is one query and its goal the rows, as an array of row arrays ([[1, \"ada\"]]); add ORDER BY when order matters."
+    ),
   brief: z.string().describe("What to solve, one or two sentences of simple HTML. Must not give the answer away."),
   source: z
     .string()
@@ -156,7 +161,7 @@ export function createServer(): McpServer {
     "submit_review",
     {
       description:
-        "Submit a rating for a card. Rating: 1=Again, 2=Hard, 3=Good, 4=Easy. Returns the new schedule: due (ISO timestamp), interval (days, 0 for intra-day learning steps), state, and intraDay (true when the card resurfaces in under a day). Errors, writing nothing, when the session is not open (ended, out of cards, or unknown).",
+        "Submit a rating for a card. Rating: 1=Again, 2=Hard, 3=Good, 4=Easy. Returns the new schedule: due (ISO timestamp), interval (days, 0 for intra-day learning steps), state, and intraDay (true when the card resurfaces in under a day). Errors, writing nothing, when the session is not open (ended, out of cards, or unknown) or `cardId` is not the card get_next_card serves now (a retry of a review already submitted).",
       inputSchema: {
         sessionId: z.string(),
         cardId: z.string(),

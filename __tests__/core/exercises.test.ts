@@ -4,6 +4,7 @@ import {
   checkExercise,
   exerciseSides,
   exerciseView,
+  parseExercise,
   revealExercise,
   runExercise,
   validateExercise,
@@ -409,5 +410,19 @@ describe("a card's own check", () => {
   it("refuses a card that passes with its blanks nil", async () => {
     const empty: Exercise = { ...fill, source: "x = {{c1::nil}}", cases: [{ expr: "x", goal: "nil" }] };
     await expect(assertExerciseWorks(empty)).rejects.toThrow(/asks nothing/);
+  });
+});
+
+describe("parseExercise", () => {
+  it("reads a stored exercise, and null for no exercise", () => {
+    expect(parseExercise(JSON.stringify(predict))).toEqual(predict);
+    expect(parseExercise(null)).toBeNull();
+    expect(parseExercise("")).toBeNull();
+  });
+
+  it("reads broken or wrong-shaped JSON as a plain card instead of throwing", () => {
+    for (const bad of ["{not json", "null", "42", '"text"', "[]", "{}", '{"source":"x"}', '{"cases":[],"source":3}']) {
+      expect(parseExercise(bad)).toBeNull();
+    }
   });
 });

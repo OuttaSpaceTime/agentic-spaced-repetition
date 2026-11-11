@@ -8,6 +8,7 @@ import {
   GRADE_SCHEMA,
   type GradeCall,
 } from "../../src/core/grading.js";
+import { MAX_ANSWER_CHARS } from "../../src/core/content-rules.js";
 
 type Message = Anthropic.Messages.Message;
 type Body = Anthropic.Messages.MessageCreateParamsNonStreaming;
@@ -56,6 +57,9 @@ describe("grading", () => {
     expect(req.messages).toEqual([{ role: "user", content: buildGradePrompt(card("my answer")) }]);
     const system = req.system as Anthropic.Messages.TextBlockParam[];
     expect(system[0].text).toMatch(/fixed rubric/);
+    // A reason is held to the card answer's limit, so it reads as fast as the back.
+    expect(system[0].text).toContain(`at most ${MAX_ANSWER_CHARS} characters`);
+    expect(GRADE_SCHEMA.properties.reason.description).toContain(`At most ${MAX_ANSWER_CHARS} characters`);
   });
 
   it("puts front, back and answer in the prompt, in tagged blocks", () => {

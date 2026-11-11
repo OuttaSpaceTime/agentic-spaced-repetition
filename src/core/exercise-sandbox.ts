@@ -1,8 +1,8 @@
-import { execFile, spawn } from "child_process";
-import { mkdtemp, realpath, rm, writeFile } from "fs/promises";
+import { spawn } from "child_process";
+import { mkdtemp, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
-import { delimiter, dirname, join } from "path";
-import { promisify } from "util";
+import { join } from "path";
+import { runnerFor, type Lang, type Runner } from "./exercise-runners.js";
 
 /**
  * Runs a code card's code, with nothing to reach.
@@ -23,12 +23,13 @@ import { promisify } from "util";
  * run's verdict comes back on a pipe of its own (fd 3), so nothing the code
  * prints can be mistaken for it, nor the other way round.
  *
- * One process per run, about 60 ms: fast enough to run at every pause in the
- * typing, and cheap enough not to keep an interpreter around that one run could
- * leave in a bad state.
+ * One process per run, about 60 ms for Ruby, Python and JavaScript: fast enough
+ * to run at every pause in the typing, and cheap enough not to keep an
+ * interpreter around that one run could leave in a bad state. TypeScript (the
+ * compiler's start) and Postgres (WASM) take a second or two. What differs per
+ * language is in exercise-runners.ts.
  */
 
-const TIMEOUT_MS = 5000;
 /** What is kept of each stream. More than this is a loop, not an answer. */
 const MAX_OUTPUT_BYTES = 64 * 1024;
 /** Every shown value is cut in the harness, so only a very odd card gets here. */
@@ -52,102 +53,7 @@ export interface SandboxResult {
   durationMs: number;
 }
 
-/**
- * Evaluates the source, then each case's expression and goal, comparing values.
- * All in the methods of a nameless module: a local of this file would be visible
- * through TOPLEVEL_BINDING to the code it runs, and a named module could collide
- * with a card's own `class Exercise`, or be reopened by it and pass a wrong answer.
- * Backtraces are cut to the frames in that code: the runner's own are noise to
- * someone reading their mistake. ARGV is emptied, or `gets` in a card would read
- * the input file, solutions and all.
- */
-const RUBY_HARNESS = String.raw`
-require "json"
-
-Module.new do
-  def self.describe(e)
-    frames = e.backtrace.to_a.select { |line| line.match?(/\A(main\.rb|case \d+|goal \d+)/) }
-    ([e.detailed_message(highlight: false)] + frames.map { |line| "\tfrom #{line}" }).join("\n").scrub
-  end
-
-  def self.attempt(code, file)
-    [eval(code, TOPLEVEL_BINDING, file, 1), nil]
-  rescue Exception => e
-    [nil, describe(e)]
-  end
-
-  def self.shown(value)
-    text = value.inspect.scrub
-    text.length > 16_384 ? "#{text[0, 16_384]}... (cut off)" : text
-  rescue Exception => e
-    "(could not inspect: #{e.class})"
-  end
-
-  def self.judge(item, index)
-    actual, error = attempt(item["expr"], "case #{index + 1}")
-    return { pass: false, actual: nil, goal: nil, error: error } if error
-    goal, error = attempt(item["goal"], "goal #{index + 1}")
-    return { pass: false, actual: shown(actual), goal: nil, error: error } if error
-    { pass: actual == goal, actual: shown(actual), goal: shown(goal), error: nil }
-  rescue Exception => e
-    { pass: false, actual: nil, goal: nil, error: describe(e) }
-  end
-
-  def self.run(input)
-    _, error = attempt(input["source"], "main.rb")
-    return { error: error, cases: [] } if error
-    { error: nil, cases: input["cases"].each_with_index.map { |item, i| judge(item, i) } }
-  end
-
-  def self.main
-    $stdout.sync = true
-    report = run(JSON.parse(File.read(ARGV.shift)))
-    verdict = IO.new(3, "w")
-    verdict.write(JSON.generate(report))
-    verdict.close
-  end
-end.main
-`;
-
-let rubyPath: Promise<string | null> | null = null;
-
-/** The newest Ruby this machine has: mise's when it has one, else the system's. */
-function findRuby(): Promise<string | null> {
-  rubyPath ??= locateRuby();
-  return rubyPath;
-}
-
-async function locateRuby(): Promise<string | null> {
-  const given = process.env.FLASHCARD_RUBY;
-  if (given != null && given !== "") return realpath(given).catch(() => null);
-  try {
-    const { stdout } = await promisify(execFile)("mise", ["which", "ruby"], { timeout: 5000 });
-    const found = stdout.trim();
-    if (found !== "") return await realpath(found);
-  } catch {
-    // No mise, or it pins no Ruby: the PATH's, below.
-  }
-  // Not through mise's shims: a shim needs mise and its config, which the
-  // sandbox hides, and it failing here is what sent us to the PATH.
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (dir === "" || dir.includes("mise/shims")) continue;
-    try {
-      return await realpath(join(dir, "ruby"));
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
-/** A Ruby outside /usr brings its install directory with it, read-only. */
-function rubyBinds(ruby: string): string[] {
-  if (ruby.startsWith("/usr/")) return [];
-  const prefix = dirname(dirname(ruby));
-  return ["--ro-bind", prefix, prefix];
-}
-
-function bubblewrapArgv(ruby: string, workDir: string): string[] {
+function bubblewrapArgv(runner: Runner, bin: string, extra: string[], workDir: string): string[] {
   return [
     "--unshare-all",
     "--die-with-parent",
@@ -171,9 +77,10 @@ function bubblewrapArgv(ruby: string, workDir: string): string[] {
     "--size", String(TMPFS_BYTES), "--tmpfs", "/tmp",
     "--ro-bind", workDir, "/exercise",
     "--chdir", "/tmp",
-    ...rubyBinds(ruby),
+    ...runner.binds(bin),
+    ...extra,
     "/usr/bin/prlimit", `--as=${MEMORY_BYTES}`, `--nproc=${MAX_PROCESSES}`, `--fsize=${TMPFS_BYTES}`, "--core=0",
-    ruby, "/exercise/harness.rb", "/exercise/input.json",
+    bin, ...runner.args,
   ];
 }
 
@@ -204,25 +111,30 @@ const UNAVAILABLE = (failure: string, started: number): SandboxResult => ({
   durationMs: Date.now() - started,
 });
 
-/** `signal` stops the run early: its result is a timeout, which nobody is waiting for. */
+/**
+ * `signal` stops the run early: its result is a timeout, which nobody is waiting for.
+ * No `lang` is Ruby, which is what the first code cards were.
+ */
 export async function runSandboxed(
-  input: { source: string; cases: unknown[] },
+  input: { lang?: Lang; source: string; cases: unknown[] },
   signal?: AbortSignal
 ): Promise<SandboxResult> {
   const started = Date.now();
-  const ruby = await findRuby();
-  if (ruby == null) return UNAVAILABLE("no ruby found: install one with mise", started);
+  const runner = runnerFor(input.lang ?? "ruby");
+  const bin = await runner.locate();
+  if (bin == null) return UNAVAILABLE(runner.missing, started);
+  const extra = (await runner.prepare?.()) ?? [];
   const workDir = await mkdtemp(join(tmpdir(), "flashcard-exercise-"));
   try {
-    await writeFile(join(workDir, "harness.rb"), RUBY_HARNESS);
-    await writeFile(join(workDir, "input.json"), JSON.stringify(input));
-    return await spawnBubblewrap(bubblewrapArgv(ruby, workDir), started, signal);
+    await writeFile(join(workDir, runner.file), runner.harness);
+    await writeFile(join(workDir, "input.json"), JSON.stringify({ source: input.source, cases: input.cases }));
+    return await spawnBubblewrap(bubblewrapArgv(runner, bin, extra, workDir), runner.timeoutMs, started, signal);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
 }
 
-function spawnBubblewrap(argv: string[], started: number, signal?: AbortSignal): Promise<SandboxResult> {
+function spawnBubblewrap(argv: string[], timeoutMs: number, started: number, signal?: AbortSignal): Promise<SandboxResult> {
   return new Promise((resolve) => {
     // PATH alone, to find bwrap: see the top of this file.
     const child = spawn("bwrap", argv, { stdio: ["ignore", "pipe", "pipe", "pipe"], env: { PATH: process.env.PATH } });
@@ -237,7 +149,7 @@ function spawnBubblewrap(argv: string[], started: number, signal?: AbortSignal):
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
-    }, TIMEOUT_MS);
+    }, timeoutMs);
     const cancel = (): void => {
       cancelled = true;
       kill();
@@ -268,7 +180,7 @@ function spawnBubblewrap(argv: string[], started: number, signal?: AbortSignal):
           report: null,
           stdout: stdout.text(),
           stderr: stderr.text(),
-          failure: cancelled ? "stopped: a newer run took its place" : `stopped after ${TIMEOUT_MS / 1000} seconds: an endless loop?`,
+          failure: cancelled ? "stopped: a newer run took its place" : `stopped after ${timeoutMs / 1000} seconds: an endless loop?`,
           durationMs,
         });
         return;

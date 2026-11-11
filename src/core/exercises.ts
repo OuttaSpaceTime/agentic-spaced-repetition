@@ -1,6 +1,9 @@
 import { ankiClozeText, CLOZE_MARKUP, splitCloze } from "./cloze.js";
 import { validateAnswer, validateCardContent, validateQuestion } from "./content-rules.js";
+import { runnerFor, type Lang } from "./exercise-runners.js";
 import { runSandboxed, type SandboxResult } from "./exercise-sandbox.js";
+
+export { LANGS, type Lang } from "./exercise-runners.js";
 
 /**
  * Code cards: a card whose answer is checked by running it, after Execute
@@ -47,7 +50,7 @@ export interface ExerciseCase {
 
 export interface Exercise {
   kind: ExerciseKind;
-  lang: "ruby";
+  lang: Lang;
   /** What to solve: one or two sentences, simple HTML. */
   brief: string;
   /** The code. fill and compose mark their blanks `{{c1::solution}}`. */
@@ -75,7 +78,7 @@ export type ExerciseStatus = "pass" | "wrong" | "error" | "timeout" | "unavailab
 export interface ExerciseCaseResult {
   expr: string;
   pass: boolean;
-  /** What `expr` evaluated to, as Ruby prints it. */
+  /** What `expr` evaluated to, as the language prints it. */
   actual: string | null;
   goal: string | null;
   /** What raised while evaluating this case. */
@@ -108,10 +111,21 @@ export interface ExerciseReveal {
 
 // ---- reading and checking the format ------------------------------------------
 
-/** The exercise in a card's column, or null for an ordinary card. */
+/**
+ * The exercise in a card's column, or null for an ordinary card. A column that
+ * holds broken or wrong-shaped JSON reads as no exercise too: one bad row must
+ * not fail every listing of the deck.
+ */
 export function parseExercise(json: string | null | undefined): Exercise | null {
   if (json == null || json === "") return null;
-  return JSON.parse(json) as Exercise;
+  try {
+    const ex = JSON.parse(json) as Partial<Exercise> | null;
+    return typeof ex === "object" && ex !== null && typeof ex.source === "string" && Array.isArray(ex.cases)
+      ? (ex as Exercise)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function blanksOf(source: string): string[] {
@@ -163,8 +177,9 @@ function sourceHtml(source: string, blank: (html: string) => string): string {
     .join("");
 }
 
-function caseLines(cases: ExerciseCase[], goal: (html: string) => string): string {
-  return cases.map((c) => `${escapeHtml(c.expr)}\n# =&gt; ${goal(escapeHtml(c.goal))}`).join("\n");
+function caseLines(lang: Lang, cases: ExerciseCase[], goal: (html: string) => string): string {
+  const comment = runnerFor(lang).comment;
+  return cases.map((c) => `${escapeHtml(c.expr)}\n${comment} =&gt; ${goal(escapeHtml(c.goal))}`).join("\n");
 }
 
 /**
@@ -176,7 +191,7 @@ export function exerciseSides(ex: Exercise): { front: string; back: string } {
   const shown = (html: string): string => html;
   const blanked = (html: string): string => (html.endsWith("\n") ? "___\n" : "___");
   const source = ex.source === "" ? "" : `${sourceHtml(ex.source, ex.kind === "fill" ? cloze : blanked)}\n`;
-  const goals = caseLines(ex.cases, ex.kind === "predict" ? cloze : shown);
+  const goals = caseLines(ex.lang, ex.cases, ex.kind === "predict" ? cloze : shown);
   // No <br> before the block: a <pre> starts its own line, and the simple-HTML
   // form the sync checks for (the study repo's htmlize.py) has none there.
   const front = `${ex.brief}${codeBlock(source + goals)}`;
@@ -237,8 +252,8 @@ function fromSandbox(run: SandboxResult, cases: ExerciseCaseResult[], error: str
   };
 }
 
-async function runCases(source: string, cases: ExerciseCase[], signal?: AbortSignal): Promise<ExerciseResult> {
-  const run = await runSandboxed({ source, cases }, signal);
+async function runCases(lang: Lang, source: string, cases: ExerciseCase[], signal?: AbortSignal): Promise<ExerciseResult> {
+  const run = await runSandboxed({ lang, source, cases }, signal);
   const reported = run.report;
   const results: ExerciseCaseResult[] = (reported?.cases ?? []).map((c, i) => ({
     expr: cases[i].expr,
@@ -279,15 +294,15 @@ export async function runExercise(ex: Exercise, answers: string[], signal?: Abor
   if (given.some((a) => a.trim() === "")) return emptyResult("incomplete");
   const result =
     ex.kind === "predict"
-      ? hideUnlessPassed(await runCases(ex.source, ex.cases.map((c, i) => ({ expr: c.expr, goal: given[i] })), signal))
-      : await runCases(filled(ex.source, given), ex.cases, signal);
+      ? hideUnlessPassed(await runCases(ex.lang, ex.source, ex.cases.map((c, i) => ({ expr: c.expr, goal: given[i] })), signal))
+      : await runCases(ex.lang, filled(ex.source, given), ex.cases, signal);
   return result.status === "pass" ? { ...result, explain: ex.explain } : result;
 }
 
 /** The solution, run, for a card given up on. */
 export async function revealExercise(ex: Exercise): Promise<ExerciseReveal> {
   const answers = ex.kind === "predict" ? ex.cases.map((c) => c.goal) : blanksOf(ex.source);
-  const result = await runCases(filled(ex.source, answers), ex.cases);
+  const result = await runCases(ex.lang, filled(ex.source, answers), ex.cases);
   return { result: { ...result, rating: null }, explain: ex.explain, answers, rating: GIVE_UP_RATING };
 }
 
@@ -335,8 +350,9 @@ export async function checkExercise(ex: Exercise): Promise<ExerciseCheck> {
       problems.push("two runs of it differ: it depends on the time, on randomness or on something else that changes");
     }
     if (ex.kind !== "predict") {
-      const empty = await runCases(filled(ex.source, blanksOf(ex.source).map(() => "nil")), ex.cases);
-      if (empty.status === "pass") problems.push("it passes with every blank nil, so it asks nothing");
+      const nothing = runnerFor(ex.lang).nothing;
+      const empty = await runCases(ex.lang, filled(ex.source, blanksOf(ex.source).map(() => nothing)), ex.cases);
+      if (empty.status === "pass") problems.push(`it passes with every blank empty (${runnerFor(ex.lang).nothing}), so it asks nothing`);
     }
   }
   return { ok: problems.length === 0, problems, solution: result, sides };

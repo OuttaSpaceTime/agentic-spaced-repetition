@@ -9,6 +9,9 @@ import type { PrismaClient } from "@prisma/client";
 let tempDir: string;
 let testPrisma: PrismaClient;
 
+// No test needs the embedding model, and loading it in every worker and every
+// CLI child (which inherits this) filled the machine's memory (embeddings.ts).
+process.env["FLASHCARD_EMBEDDINGS"] = "off";
 beforeEach(async () => {
   const db = testPrisma;
   await db.cardNote.deleteMany();

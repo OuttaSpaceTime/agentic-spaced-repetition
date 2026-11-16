@@ -81,7 +81,9 @@ export function isEmbeddingsReady(): boolean {
 }
 
 export async function initEmbeddings(): Promise<void> {
-  if (embeddingPipeline != null || loadFailed) return;
+  // Off in tests (__tests__/setup.ts): every card created would load the model and
+  // ONNX runtime, hundreds of MB and a thread per core, in each worker and CLI child.
+  if (embeddingPipeline != null || loadFailed || process.env["FLASHCARD_EMBEDDINGS"] === "off") return;
   if (loadingPromise) return loadingPromise;
 
   loadingPromise = (async () => {

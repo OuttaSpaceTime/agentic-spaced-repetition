@@ -134,6 +134,7 @@ export function createHandlers(deps: { gradeCall?: GradeCall } = {}): Record<str
         reviewCards: session.reviewCount,
         maxNewCards: maxNewCards ?? null,
         newHeldBack: maxNewCards === 0 ? pressure.newAvailable : 0,
+        reviewsHeldBack: session.reviewsHeldBack,
         pressure,
       };
     },

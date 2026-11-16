@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   reviewCard,
+  avoidEasyDays,
   getRetrievability,
   createNewFsrsCard,
   cardMaturity,
@@ -269,5 +270,39 @@ describe("cardMaturity", () => {
       const base = reviewCard(review, Rating.Good, now).card.interval;
       expect(reviewCard(review, Rating.Good, now, { weights: w }).card.interval).not.toBe(base);
     });
+  });
+});
+
+describe("avoidEasyDays (Anki's Easy Days)", () => {
+  const weekendsOff = [1, 1, 1, 1, 1, 0, 0];
+  // Saturday 2026-11-21, 09:00 local.
+  const saturday = new Date(2026, 10, 21, 9);
+  const reviewCardDue = (due: Date, interval: number) => ({
+    due, stability: 20, difficulty: 5, reps: 5, lapses: 0, state: State.Review as number, lastReview: null, interval,
+  });
+
+  it("moves a review off a minimum day to the nearest normal one, keeping the hour", () => {
+    const moved = avoidEasyDays(reviewCardDue(saturday, 10), 10, weekendsOff);
+    expect(moved.due).toEqual(new Date(2026, 10, 20, 9)); // Friday: as near as Monday, and shorter
+    expect(moved.interval).toBe(9);
+  });
+
+  it("leaves a normal day, a short interval and no setting alone", () => {
+    const friday = reviewCardDue(new Date(2026, 10, 20, 9), 10);
+    expect(avoidEasyDays(friday, 10, weekendsOff)).toBe(friday);
+    const short = reviewCardDue(saturday, 2);
+    expect(avoidEasyDays(short, 2, weekendsOff)).toBe(short);
+    const any = reviewCardDue(saturday, 10);
+    expect(avoidEasyDays(any, 10, undefined)).toBe(any);
+  });
+
+  it("is what reviewCard gives, so a preview matches the review", () => {
+    const now = new Date(2026, 10, 16, 9);
+    const card = { ...reviewCardDue(now, 30), lastReview: new Date(2026, 9, 17, 9) };
+    for (let i = 0; i < 3; i++) {
+      const a = reviewCard(card, Rating.Good, now, { easyDays: weekendsOff });
+      expect([0, 6]).not.toContain(a.card.due.getDay());
+      expect(reviewCard(card, Rating.Good, now, { easyDays: weekendsOff }).card).toEqual(a.card);
+    }
   });
 });

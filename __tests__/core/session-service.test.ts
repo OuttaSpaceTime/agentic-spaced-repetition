@@ -16,6 +16,7 @@ import { createDeck } from "../../src/core/deck-service.js";
 import { getDb } from "../../src/db/client.js";
 import { previewSchedules } from "../../src/core/session-service.js";
 import { Rating, State } from "ts-fsrs";
+import { MS_PER_DAY } from "../../src/core/days.js";
 
 let deckId: string;
 
@@ -993,6 +994,86 @@ describe("scheduling settings that can't be used", () => {
     const card = { due: new Date(), stability: 0, difficulty: 0, reps: 0, lapses: 0, state: State.New as number, lastReview: null, interval: 0 };
     const schedules = await previewSchedules(card);
     expect(schedules[3].state).toBeDefined();
+    await getDb().config.delete({ where: { id: "default" } });
+  });
+});
+
+describe("Easy Days from the saved settings", () => {
+  it("keeps a previewed review off the minimum days", async () => {
+    await getDb().config.upsert({
+      where: { id: "default" },
+      create: { id: "default", easyDays: "[1,1,1,1,1,0,0]" },
+      update: { easyDays: "[1,1,1,1,1,0,0]" },
+    });
+    const now = new Date(2026, 10, 16, 9);
+    const card = { due: now, stability: 30, difficulty: 5, reps: 5, lapses: 0, state: State.Review as number, lastReview: new Date(2026, 9, 17, 9), interval: 30 };
+    const schedules = await previewSchedules(card, now);
+    for (const rating of [2, 3, 4] as const) expect([0, 6]).not.toContain(new Date(schedules[rating].due).getDay());
+    await getDb().config.delete({ where: { id: "default" } });
+  });
+});
+
+describe("Anki's daily limits", () => {
+  beforeEach(async () => {
+    deckId = (await createDeck("TestDeck")).id;
+  });
+
+  async function limits(newPerDay: number, reviewsPerDay: number, newCardsIgnoreReviewLimit = false) {
+    const data = { newPerDay, reviewsPerDay, newCardsIgnoreReviewLimit };
+    await getDb().config.upsert({ where: { id: "default" }, create: { id: "default", ...data }, update: data });
+  }
+  /** A review row today; with `before`, also one yesterday, so the card counts as a review, not new. */
+  async function studied(cardId: string, before = false) {
+    const row = { cardId, rating: 3, stability: 1, difficulty: 5, elapsedDays: 0 };
+    await getDb().review.create({ data: { ...row, reviewedAt: new Date() } });
+    if (before) await getDb().review.create({ data: { ...row, reviewedAt: new Date(Date.now() - 2 * MS_PER_DAY) } });
+  }
+  const dueReviews = (n: number) =>
+    seedCards(n, { state: State.Review, due: new Date(Date.now() - MS_PER_DAY), stability: 5, lastReview: new Date(Date.now() - 7 * MS_PER_DAY) });
+
+  it("queues only the new cards today has left", async () => {
+    await limits(2, 200);
+    const [done] = await seedCards(1, { state: State.Learning, due: new Date(Date.now() + MS_PER_DAY) });
+    await studied(done.id);
+    await seedCards(5);
+    expect((await startSession()).newCount).toBe(1);
+    await getDb().config.delete({ where: { id: "default" } });
+  });
+
+  it("counts new cards toward the review limit unless they ignore it", async () => {
+    await limits(10, 4);
+    for (const c of await seedCards(2, { state: State.Learning, due: new Date(Date.now() + MS_PER_DAY) })) await studied(c.id);
+    const [old] = await seedCards(1, { state: State.Review, due: new Date(Date.now() + 5 * MS_PER_DAY), stability: 5 });
+    await studied(old.id, true);
+    await dueReviews(3);
+    await seedCards(3);
+    // 4 - 1 review - 2 new studied = 1 left: one review, no new card.
+    let s = await startSession();
+    expect([s.reviewCount, s.newCount]).toEqual([1, 0]);
+
+    await limits(10, 4, true);
+    s = await startSession();
+    // 4 - 1 review = 3 left for reviews; new cards only by their own limit, 10 - 2.
+    expect([s.reviewCount, s.newCount]).toEqual([3, 3]);
+    await getDb().config.delete({ where: { id: "default" } });
+  });
+
+  it("keeps new cards out while due reviews beyond this session still need the limit", async () => {
+    await limits(10, 4);
+    await dueReviews(3);
+    await seedCards(3);
+    // The session takes 2 reviews, but all 3 due count: 4 - 3 = 1 new card, not 2.
+    const s = await startSession({ maxReviewCardsPerSession: 2 });
+    expect([s.reviewCount, s.newCount, s.reviewsHeldBack]).toEqual([2, 1, 0]);
+    await getDb().config.delete({ where: { id: "default" } });
+  });
+
+  it("says how many due reviews the limit holds back, and never holds back learning steps", async () => {
+    await limits(10, 0);
+    await dueReviews(3);
+    await seedCards(1, { state: State.Learning, due: new Date(Date.now() - 60_000) });
+    const s = await startSession();
+    expect([s.reviewCount, s.newCount, s.reviewsHeldBack]).toEqual([1, 0, 3]);
     await getDb().config.delete({ where: { id: "default" } });
   });
 });

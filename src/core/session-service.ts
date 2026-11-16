@@ -9,7 +9,7 @@ import {
   type SchedulerParams,
 } from "./scheduler.js";
 import { dueReviewWhere, NEW_CARD_WHERE } from "./pressure.js";
-import { MS_PER_DAY } from "./days.js";
+import { MS_PER_DAY, startOfLocalDay } from "./days.js";
 import type { MasterConfig, SessionQueueItem, SessionAdjustment } from "./types.js";
 import { Rating, State, type Grade, type Steps } from "ts-fsrs";
 import type { Card as PrismaCard, Config, Prisma, StudySession } from "@prisma/client";
@@ -125,18 +125,22 @@ function parseSteps(text: string): Steps | undefined {
   return steps.every((s) => /^\d+(\.\d+)?[mhd]$/.test(s)) ? (steps as Steps) : undefined;
 }
 
-function parseWeights(text: string): number[] | undefined {
+/** A JSON array of finite numbers that `fits`, or undefined for "", bad JSON or anything else. */
+function parseNumbers(text: string, fits: (xs: number[]) => boolean): number[] | undefined {
   try {
     const parsed: unknown = text === "" ? undefined : JSON.parse(text);
-    const usable =
-      Array.isArray(parsed) &&
-      FSRS_WEIGHT_COUNTS.includes(parsed.length) &&
-      parsed.every((x) => typeof x === "number" && Number.isFinite(x));
-    return usable ? (parsed as number[]) : undefined;
+    const numbers = Array.isArray(parsed) && parsed.every((x) => typeof x === "number" && Number.isFinite(x));
+    return numbers && fits(parsed as number[]) ? (parsed as number[]) : undefined;
   } catch {
     return undefined;
   }
 }
+
+const parseWeights = (text: string) => parseNumbers(text, (xs) => FSRS_WEIGHT_COUNTS.includes(xs.length));
+
+/** Seven loads between 0 and 1, Monday first; all normal (Anki's feature off) is none. */
+const parseEasyDays = (text: string) =>
+  parseNumbers(text, (xs) => xs.length === 7 && xs.every((x) => x >= 0 && x <= 1) && xs.some((x) => x < 1));
 
 /**
  * The scheduler's inputs from the saved settings: retention, the steps and the
@@ -150,6 +154,7 @@ function schedulerParams(config: Config): SchedulerParams {
     learningSteps: parseSteps(config.learningSteps),
     relearningSteps: parseSteps(config.relearningSteps),
     weights: parseWeights(config.fsrsWeights),
+    easyDays: parseEasyDays(config.easyDays),
   };
 }
 
@@ -165,6 +170,28 @@ async function readConfig(): Promise<Config> {
   return saved ?? db.config.upsert({ where: { id: "default" }, create: { id: "default" }, update: {} });
 }
 
+/**
+ * Cards studied since local midnight, as Anki's limits count them: each card
+ * once, new if today holds its first review ever, a review otherwise.
+ * shortcut: one count over every deck, which is Anki's per-deck limit while all
+ * cards live in one deck; scope it by deck if they ever spread out.
+ */
+async function studiedToday(): Promise<{ newCards: number; reviews: number }> {
+  const db = getDb();
+  const midnight = startOfLocalDay(new Date());
+  const ids = (
+    await db.review.findMany({ where: { reviewedAt: { gte: midnight } }, select: { cardId: true }, distinct: ["cardId"] })
+  ).map((r) => r.cardId);
+  const reviews = (
+    await db.review.findMany({
+      where: { cardId: { in: ids }, reviewedAt: { lt: midnight } },
+      select: { cardId: true },
+      distinct: ["cardId"],
+    })
+  ).length;
+  return { newCards: ids.length - reviews, reviews };
+}
+
 export interface StartSessionResult {
   id: string;
   queue: SessionQueueItem[];
@@ -172,6 +199,8 @@ export interface StartSessionResult {
   newCount: number;
   /** Due review cards queued (`due_review` items). */
   reviewCount: number;
+  /** Due Review cards the daily review limit keeps out until tomorrow (not the session cap's). */
+  reviewsHeldBack: number;
 }
 
 export async function startSession(
@@ -208,12 +237,28 @@ export async function startSession(
     }))
     .sort((a, b) => a.retrievability - b.retrievability);
 
-  const reviewQueue: SessionQueueItem[] = rankedReviews
-    .slice(0, config.maxReviewCardsPerSession)
-    .map((r) => ({ cardId: r.card.id, reason: "due_review" as const }));
+  // Anki's daily limits (deck options, mirrored by anki-sync) on top of the
+  // session's own caps, so several sessions in a day stop where Anki would.
+  const today = await studiedToday();
+  const reviewBudget = Math.max(0, saved.reviewsPerDay - today.reviews - (saved.newCardsIgnoreReviewLimit ? 0 : today.newCards));
+  // Learning steps are minutes, intraday in Anki, which never limits those.
+  const dueReviews = rankedReviews.filter((r) => r.card.state === State.Review).length;
+  let reviewsLeft = reviewBudget;
+  const reviewQueue: SessionQueueItem[] = [];
+  for (const { card } of rankedReviews) {
+    if (reviewQueue.length >= config.maxReviewCardsPerSession) break;
+    if (card.state === State.Review) {
+      if (reviewsLeft === 0) continue;
+      reviewsLeft--;
+    }
+    reviewQueue.push({ cardId: card.id, reason: "due_review" });
+  }
 
   // Reduce new card allowance when review-heavy
-  let maxNew = config.maxNewCardsPerSession;
+  let maxNew = Math.min(config.maxNewCardsPerSession, Math.max(0, saved.newPerDay - today.newCards));
+  // Off (Anki's default), new cards count toward the review limit and get only what
+  // every due review leaves, not just this session's: a backlog keeps them out.
+  if (!saved.newCardsIgnoreReviewLimit) maxNew = Math.min(maxNew, Math.max(0, reviewBudget - dueReviews));
   if (reviewQueue.length > 10) {
     maxNew = Math.min(maxNew, 3);
   }
@@ -246,7 +291,13 @@ export async function startSession(
   const session = await db.studySession.create({ data: { queueState: JSON.stringify(state) } });
   sessions.set(session.id, state);
 
-  return { id: session.id, queue, newCount: newCards.length, reviewCount: reviewQueue.length };
+  return {
+    id: session.id,
+    queue,
+    newCount: newCards.length,
+    reviewCount: reviewQueue.length,
+    reviewsHeldBack: Math.max(0, dueReviews - reviewBudget),
+  };
 }
 
 /**

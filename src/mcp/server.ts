@@ -101,7 +101,7 @@ export function createServer(): McpServer {
     "start_session",
     {
       description:
-        "Start a study session. Returns sessionId, queueLength and queue (items of {cardId, reason}). The queue holds due review cards, lowest recall probability first, up to maxReviewCards, followed by up to maxNewCards New cards (at most 3 when more than 10 reviews are queued); with practiceFirst, unguided New cards move to the front. It does not consult check_pressure. Starting a session deletes every open session that has no reviews yet, so their session ids stop working.",
+        "Start a study session. Returns sessionId, queueLength and queue (items of {cardId, reason}). The queue holds due review cards, lowest recall probability first, up to maxReviewCards, followed by up to maxNewCards New cards (at most 3 when more than 10 reviews are queued); both are also held to the Anki daily limits mirrored into Config (new cards per day, reviews per day, and new cards counting toward the review limit unless newCardsIgnoreReviewLimit); with practiceFirst, unguided New cards move to the front. It does not consult check_pressure. Starting a session deletes every open session that has no reviews yet, so their session ids stop working.",
       inputSchema: {
         maxNewCards: z.number().optional().describe("Max new cards (default 5)"),
         maxReviewCards: z.number().optional().describe("Max review cards (default 15)"),

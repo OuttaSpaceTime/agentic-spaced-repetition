@@ -116,9 +116,16 @@ model Config {
   // Scheduling parameters mirrored from the Anki deck options by anki-sync, so the
   // intervals shown here are the ones Anki shows. Steps are comma-separated
   // ts-fsrs units; fsrsWeights is a JSON array, "" for the library's defaults.
+  // easyDays is Anki's Easy Days, seven loads Monday first, "" for none.
   learningSteps            String  @default("1m,10m")
   relearningSteps          String  @default("10m")
   fsrsWeights              String  @default("")
+  easyDays                 String  @default("")
+  // Anki's daily limits and its collection-wide "new cards ignore review limit";
+  // defaults are Anki's.
+  newPerDay                 Int     @default(20)
+  reviewsPerDay             Int     @default(200)
+  newCardsIgnoreReviewLimit Boolean @default(false)
 }
 
 // Deletion has to be explicit state, not absence: several machines share one

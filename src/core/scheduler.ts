@@ -2,6 +2,8 @@ import {
   fsrs,
   createEmptyCard,
   dateDiffInDays,
+  default_maximum_interval,
+  getFuzzRange,
   Grades,
   S_MIN,
   State,
@@ -38,6 +40,8 @@ export type SchedulerParams = {
   learningSteps?: Steps;
   relearningSteps?: Steps;
   weights?: readonly number[];
+  /** Anki's Easy Days: seven loads, Monday first, 1 normal, 0 minimum. See `avoidEasyDays`. */
+  easyDays?: readonly number[];
 };
 
 export type ReviewResult = {
@@ -70,7 +74,8 @@ export function cardMaturity(card: { state: number; interval: number }): CardMat
 const schedulers = new Map<string, FSRS>();
 
 function getScheduler(params: SchedulerParams = {}): FSRS {
-  const key = JSON.stringify(params);
+  const { easyDays: _easyDays, ...fsrsParams } = params; // not ts-fsrs's: one scheduler whatever the days
+  const key = JSON.stringify(fsrsParams);
   let scheduler = schedulers.get(key);
   if (scheduler === undefined) {
     scheduler = fsrs({
@@ -178,7 +183,36 @@ export function reviewCard(
   // ts-fsrs 6 no longer reports elapsed days; this is its old UTC calendar-day
   // count, which calibration's `elapsedDays >= 1` filter relies on.
   const elapsedDays = safe.state === State.New || safe.lastReview == null ? 0 : dateDiffInDays(safe.lastReview, now);
-  return { card: fromFsrsCard(item.card), elapsedDays };
+  return { card: avoidEasyDays(fromFsrsCard(item.card), elapsedDays, params?.easyDays), elapsedDays };
+}
+
+/**
+ * Anki's Easy Days (deck options, mirrored by anki-sync): a review lands on the
+ * day of its fuzz range whose weekday has the highest load, nearest the FSRS
+ * interval on a tie, the shorter one on a tie of distance. Anki's load balancer
+ * also weighs each day's review count and draws at random; this keeps only the
+ * weekday rule, deterministically, so a preview promises what the review gives
+ * (the reason fuzz is off). Intervals under 3 days have no fuzz range in Anki
+ * either, so a short one can still land on a minimum day.
+ */
+export function avoidEasyDays(card: SchedulableCard, elapsedDays: number, easyDays?: readonly number[]): SchedulableCard {
+  if (easyDays === undefined || card.state !== State.Review || card.interval < 3) return card;
+  const { minInterval, maxInterval } = getFuzzRange(card.interval, elapsedDays, default_maximum_interval);
+  const load = (days: number) => {
+    const d = new Date(card.due);
+    d.setDate(d.getDate() + days - card.interval); // a calendar step, so DST moves nothing
+    return easyDays[(d.getDay() + 6) % 7]; // getDay is Sunday first, Anki's list Monday first
+  };
+  const distance = (days: number) => Math.abs(days - card.interval);
+  let best = card.interval;
+  // Ascending, and replaced only when strictly better, so a full tie keeps the shorter.
+  for (let days = minInterval; days <= maxInterval; days++) {
+    if (load(days) > load(best) || (load(days) === load(best) && distance(days) < distance(best))) best = days;
+  }
+  if (best === card.interval) return card;
+  const due = new Date(card.due);
+  due.setDate(due.getDate() + best - card.interval);
+  return { ...card, due, interval: best };
 }
 
 /**

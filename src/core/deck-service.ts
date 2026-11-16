@@ -1,6 +1,7 @@
 import type { Deck } from "@prisma/client";
 import { State } from "ts-fsrs";
 import { getDb } from "../db/client.js";
+import { dueClause } from "./due.js";
 import { tombstone } from "./card-service.js";
 import type { DeckStats } from "./types.js";
 
@@ -48,7 +49,7 @@ async function stateCounts(deckIds?: string[]): Promise<[StateCount[], StateCoun
     db.card.groupBy({ by: ["deckId", "state"], where: scope, _count: { _all: true } }),
     db.card.groupBy({
       by: ["deckId", "state"],
-      where: { ...scope, due: { lte: new Date() }, suspended: false },
+      where: { ...scope, ...dueClause(), suspended: false },
       _count: { _all: true },
     }),
   ]);

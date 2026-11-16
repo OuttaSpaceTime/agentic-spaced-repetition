@@ -4,6 +4,7 @@ import { listDeckStats } from "./deck-service.js";
 import type { DeckStats } from "./types.js";
 import { State } from "ts-fsrs";
 import { startOfLocalDay } from "./days.js";
+import { dueClause } from "./due.js";
 
 export const WARN_FLASHCARDS = 20;
 export const PAUSE_FLASHCARDS = 50;
@@ -45,7 +46,7 @@ export interface PressureReport {
  * same predicate, so "due" means one thing everywhere.
  */
 export function dueReviewWhere(now: Date = new Date()): Prisma.CardWhereInput {
-  return { due: { lte: now }, suspended: false, state: { not: State.New } };
+  return { ...dueClause(now), suspended: false, state: { not: State.New } };
 }
 
 /**
@@ -80,7 +81,7 @@ async function newAvailableCount(): Promise<number> {
   return getDb().card.count({ where: NEW_CARD_WHERE });
 }
 
-function axisVerdict(count: number, warn: number, pause: number): PressureVerdict {
+export function axisVerdict(count: number, warn: number, pause: number): PressureVerdict {
   if (count >= pause) return "pause";
   if (count >= warn) return "warn";
   return "ok";

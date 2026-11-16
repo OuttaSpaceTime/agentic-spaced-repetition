@@ -22,6 +22,7 @@ import { getOverview } from "../core/overview.js";
 import { recentSessions } from "../core/recent-sessions.js";
 import { listCardNotes, setCardNote } from "../core/card-notes.js";
 import { localDay } from "../core/days.js";
+import { axisVerdict, PAUSE_FLASHCARDS, WARN_FLASHCARDS } from "../core/pressure.js";
 import { clozeSides } from "../core/cloze.js";
 import { exerciseView, parseExercise, revealExercise, runExercise, type ExerciseView } from "../core/exercises.js";
 
@@ -32,7 +33,7 @@ import { exerciseView, parseExercise, revealExercise, runExercise, type Exercise
  *
  * These things differ from the MCP tools on purpose:
  * - `startSession` derives `maxNewCards` from the pressure verdict itself
- *   (ok -> default, warn/pause -> 0), exactly as /study's Phase 2 table says,
+ *   (review backlog ok -> default, warn/pause -> 0; intake never holds them back), exactly as /study's Phase 2 table says,
  *   so the app cannot forget the rule.
  * - `nextCard` returns the leech block as data (core getNextCardOrBlock)
  *   instead of an error. The MCP tool throws, because for Claude the error
@@ -120,7 +121,11 @@ export function createHandlers(deps: { gradeCall?: GradeCall } = {}): Record<str
 
     startSession: async () => {
       const pressure = await checkPressure();
-      const maxNewCards = pressure.verdict === "ok" ? undefined : 0;
+      // Only the review backlog holds new cards back. A warn raised by intake
+      // (cards added today) is about creating cards; studying the ones already
+      // made adds no load, so it must not lock them away.
+      const backlog = axisVerdict(pressure.flashcardsDue, WARN_FLASHCARDS, PAUSE_FLASHCARDS);
+      const maxNewCards = backlog === "ok" ? undefined : 0;
       const session = await startSession({ maxNewCardsPerSession: maxNewCards });
       return {
         sessionId: session.id,

@@ -12,7 +12,7 @@ import type { GradeCall } from "../../src/core/grading.js";
 
 let deckId: string;
 
-async function seed(count: number, overrides: Partial<{ state: number; due: Date; lapses: number; front: string }> = {}) {
+async function seed(count: number, overrides: Partial<{ state: number; due: Date; lapses: number; front: string; createdAt: Date }> = {}) {
   const db = getDb();
   const out = [];
   for (let i = 0; i < count; i++) {
@@ -30,7 +30,7 @@ async function seed(count: number, overrides: Partial<{ state: number; due: Date
           lastReview: overrides.state === State.Review ? new Date(Date.now() - 6 * 86400_000) : null,
           interval: overrides.state === State.Review ? 5 : 0,
           // Yesterday, so seeding does not count as today's intake (pressure's second axis).
-          createdAt: new Date(Date.now() - 86400_000),
+          createdAt: overrides.createdAt ?? new Date(Date.now() - 86400_000),
         },
       })
     );
@@ -77,6 +77,15 @@ describe("app handlers", () => {
     expect(s.maxNewCards).toBe(0);
     expect(s.newCards).toBe(0);
     expect(s.newHeldBack).toBe(3);
+  });
+
+  it("still serves new cards when only intake (cards added today) raised the warn", async () => {
+    await seed(6, { createdAt: new Date() });
+    const s = (await h.startSession({})) as { pressure: { verdict: string }; maxNewCards: number | null; newCards: number; newHeldBack: number };
+    expect(s.pressure.verdict).toBe("warn");
+    expect(s.maxNewCards).toBeNull();
+    expect(s.newCards).toBe(5);
+    expect(s.newHeldBack).toBe(0);
   });
 
   it("takes new cards at the default when pressure is ok", async () => {

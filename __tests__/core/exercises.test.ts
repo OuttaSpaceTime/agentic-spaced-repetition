@@ -14,6 +14,9 @@ import { clozeSides, splitCloze } from "../../src/core/cloze.js";
 import { validateCardContent } from "../../src/core/content-rules.js";
 import { runSandboxed } from "../../src/core/exercise-sandbox.js";
 
+// The sandbox tests assume a Ruby under /usr; a mise Ruby adds PKG_CONFIG_PATH and binds its prefix under /home.
+process.env.FLASHCARD_RUBY ??= "/usr/bin/ruby";
+
 const predict: Exercise = {
   kind: "predict",
   lang: "ruby",

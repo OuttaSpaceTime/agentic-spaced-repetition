@@ -1,6 +1,7 @@
 import { getDb } from "../db/client.js";
 import { assertCardContent } from "./content-rules.js";
 import { assertCanCreateCard } from "./pressure.js";
+import { dueClause } from "./due.js";
 import { leechResolutionFor } from "./leeches.js";
 import { createNewFsrsCard, type SchedulableCard } from "./scheduler.js";
 import {
@@ -80,7 +81,7 @@ export const CARD_STATE_BY_NAME = Object.fromEntries(
 ) as Record<CardStateName, State>;
 
 function dueWhere(): Prisma.CardWhereInput {
-  return { due: { lte: new Date() }, suspended: false };
+  return { ...dueClause(), suspended: false };
 }
 
 function scheduleEmbeddingUpdate(cardId: string, front: string, back: string): void {

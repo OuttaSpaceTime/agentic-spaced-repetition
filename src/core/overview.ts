@@ -1,3 +1,4 @@
+import { State } from "ts-fsrs";
 import { getDb } from "../db/client.js";
 import { checkPressure, dueReviewWhere, type PressureReport } from "./pressure.js";
 import { checkCalibration, type CalibrationReport } from "./calibration.js";
@@ -27,6 +28,24 @@ export interface DayCount {
   again: number;
 }
 
+export interface ForecastDay {
+  /** Local calendar day, YYYY-MM-DD. */
+  day: string;
+  /** Reviews scheduled on that day as the deck stands now. */
+  due: number;
+}
+
+export interface LoadBar {
+  /** A single day's weekday ("Mo"), or a total's span ("4d"). */
+  label: string;
+  reviews: number;
+  /** Of those reviews, the ones rated Again. */
+  again: number;
+  /** Reviews still to come: today's backlog, or what is scheduled ahead. */
+  due: number;
+  today: boolean;
+}
+
 export interface PendingCard {
   deck: string;
   /** Front with markup stripped, for a one-line preview. */
@@ -43,6 +62,8 @@ export interface Overview {
   maturity: Record<CardMaturity, number>;
   /** Oldest first, ending today: always `days` entries. */
   week: DayCount[];
+  /** Reviews by day around today, oldest first: see `loadBars`. */
+  load: LoadBar[];
   reviewedToday: number;
   /** Due review cards, most overdue first; new cards are a pool, not pending. */
   pending: PendingCard[];
@@ -72,6 +93,67 @@ export function bucketWeek(
   return out;
 }
 
+/**
+ * Scheduled reviews per local day for the `days` days after today. Only what
+ * is scheduled now: a card reviewed tomorrow comes back later than this shows,
+ * and today's backlog is pressure's figure, not carried forward.
+ */
+export function bucketForecast(cards: readonly { due: Date }[], now: Date, days: number): ForecastDay[] {
+  const out = Array.from({ length: days }, (_, i) => ({ day: localDay(startOfLocalDay(now, -(i + 1))), due: 0 }));
+  const index = new Map(out.map((entry) => [entry.day, entry]));
+  for (const card of cards) {
+    const entry = index.get(localDay(card.due));
+    if (entry != null) entry.due += 1;
+  }
+  return out;
+}
+
+/** Each side of today, nearest first: single days, then ever wider totals. */
+const LOAD_SPANS = [1, 1, 1, 1, 1, 2, 4, 8];
+const LOAD_DAYS = LOAD_SPANS.reduce((sum, n) => sum + n, 0);
+
+function spans<T>(days: readonly T[]): T[][] {
+  let at = 0;
+  return LOAD_SPANS.map((n) => days.slice(at, (at += n)));
+}
+
+function weekdayLabel(day: string): string {
+  // Noon, so no time zone or DST change can move it onto another day.
+  return new Date(`${day}T12:00:00`).toLocaleDateString("en", { weekday: "short" }).slice(0, 2);
+}
+
+function spanLabel(run: readonly { day: string }[]): string {
+  return run.length === 1 ? weekdayLabel(run[0].day) : `${run.length}d`;
+}
+
+/**
+ * The review chart the Omvida app and bar panel both draw: the days behind
+ * today, today, the days ahead. `history` is oldest first and ends today;
+ * `forecast` starts tomorrow. Grouped here so the two can never differ.
+ */
+export function loadBars(history: readonly DayCount[], forecast: readonly ForecastDay[], dueToday: number): LoadBar[] {
+  const today = history[history.length - 1];
+  const behind = spans([...history.slice(0, -1)].reverse()).map((run) => ({
+    label: spanLabel(run),
+    reviews: run.reduce((sum, d) => sum + d.reviews, 0),
+    again: run.reduce((sum, d) => sum + d.again, 0),
+    due: 0,
+    today: false,
+  }));
+  const ahead = spans(forecast).map((run) => ({
+    label: spanLabel(run),
+    reviews: 0,
+    again: 0,
+    due: run.reduce((sum, d) => sum + d.due, 0),
+    today: false,
+  }));
+  return [
+    ...behind.reverse(),
+    { label: weekdayLabel(today.day), reviews: today.reviews, again: today.again, due: dueToday, today: true },
+    ...ahead,
+  ];
+}
+
 export async function getOverview(opts: { pendingLimit?: number; now?: Date } = {}): Promise<Overview> {
   const db = getDb();
   const now = opts.now ?? new Date();
@@ -80,9 +162,9 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
     checkPressure(),
     checkCalibration(),
     getStudyStreak(now),
-    db.card.findMany({ where: { suspended: false }, select: { state: true, interval: true } }),
+    db.card.findMany({ where: { suspended: false }, select: { state: true, interval: true, due: true } }),
     db.review.findMany({
-      where: { reviewedAt: { gte: startOfLocalDay(now, 6) } },
+      where: { reviewedAt: { gte: startOfLocalDay(now, LOAD_DAYS) } },
       select: { reviewedAt: true, rating: true },
     }),
     db.card.findMany({
@@ -99,6 +181,8 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
   for (const card of cards) maturity[cardMaturity(card)] += 1;
 
   const week = bucketWeek(reviews, now);
+  // A New card's `due` is only its creation time: it has no schedule yet.
+  const forecast = bucketForecast(cards.filter((c) => c.state !== State.New), now, LOAD_DAYS);
 
   return {
     pressure,
@@ -107,6 +191,7 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
     totalCards: cards.length,
     maturity,
     week,
+    load: loadBars(bucketWeek(reviews, now, LOAD_DAYS + 1), forecast, pressure.flashcardsDue),
     reviewedToday: week[week.length - 1]?.reviews ?? 0,
     pending: pending.map((c) => ({ deck: c.deck.name, text: visibleText(c.front), lapses: c.lapses })),
   };

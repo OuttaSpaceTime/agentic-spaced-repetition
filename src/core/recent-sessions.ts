@@ -1,9 +1,13 @@
 import { getDb } from "../db/client.js";
+import { parseTags } from "./types.js";
 
 /**
  * The app's Home lists recent study sessions with what each exposed: the cards
  * that lapsed (rated Again) and the cards noted during it (card-notes.ts), so
  * a fix session can be started from there.
+ *
+ * Each session also carries its reviews, oldest first, so the app can show a
+ * past session's summary the way it shows one just finished.
  *
  * Reviews carry no session id, so a session's reviews are the ones in its
  * window: from its start to its end, or, for one never closed (endTime stays
@@ -22,6 +26,8 @@ export interface SessionFlaws {
   lapses: { cardId: string; front: string }[];
   /** Cards whose open note was written during the session. */
   noted: string[];
+  /** Every review in the session's window, oldest first. */
+  reviews: { cardId: string; front: string; tags: string[]; rating: number; reviewedAt: string }[];
 }
 
 export async function recentSessions(limit = 5): Promise<SessionFlaws[]> {
@@ -37,10 +43,10 @@ export async function recentSessions(limit = 5): Promise<SessionFlaws[]> {
   const from = sessions[sessions.length - 1].startTime;
   const to = new Date(Math.max(...ends.map((d) => d.getTime())));
 
-  const [lapses, notes] = await Promise.all([
+  const [reviews, notes] = await Promise.all([
     db.review.findMany({
-      where: { rating: 1, reviewedAt: { gte: from, lte: to } },
-      select: { cardId: true, reviewedAt: true, card: { select: { front: true } } },
+      where: { reviewedAt: { gte: from, lte: to } },
+      select: { cardId: true, rating: true, reviewedAt: true, card: { select: { front: true, tags: true } } },
       orderBy: { reviewedAt: "asc" },
     }),
     notesIn(from, to),
@@ -50,8 +56,9 @@ export async function recentSessions(limit = 5): Promise<SessionFlaws[]> {
     const inside = (d: Date) => d >= s.startTime && d <= ends[i];
     const seen = new Set<string>();
     const lapsed: SessionFlaws["lapses"] = [];
-    for (const r of lapses) {
-      if (!inside(r.reviewedAt) || seen.has(r.cardId)) continue;
+    const mine = reviews.filter((r) => inside(r.reviewedAt));
+    for (const r of mine) {
+      if (r.rating !== 1 || seen.has(r.cardId)) continue;
       seen.add(r.cardId);
       lapsed.push({ cardId: r.cardId, front: r.card.front });
     }
@@ -63,6 +70,13 @@ export async function recentSessions(limit = 5): Promise<SessionFlaws[]> {
       accuracy: s.accuracy,
       lapses: lapsed,
       noted: notes.filter((n) => inside(n.createdAt)).map((n) => n.cardId),
+      reviews: mine.map((r) => ({
+        cardId: r.cardId,
+        front: r.card.front,
+        tags: parseTags(r.card.tags),
+        rating: r.rating,
+        reviewedAt: r.reviewedAt.toISOString(),
+      })),
     };
   });
 }

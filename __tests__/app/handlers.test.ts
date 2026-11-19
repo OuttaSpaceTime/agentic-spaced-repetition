@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { State } from "ts-fsrs";
 import { createHandlers, toAppCard } from "../../src/app/handlers.js";
 import { dispatch } from "../../src/app/server.js";
-import { bucketWeek } from "../../src/core/overview.js";
+import { bucketForecast, bucketWeek, loadBars } from "../../src/core/overview.js";
 import { localDay } from "../../src/core/days.js";
 import { createCard, createCodeCard, updateCard, updateCodeCard } from "../../src/core/card-service.js";
 import { createDeck } from "../../src/core/deck-service.js";
@@ -258,6 +258,10 @@ describe("app handlers", () => {
     expect(out[1].lapses.map((l) => l.cardId)).toEqual([a.id, b.id]);
     expect(out[1].lapses[0].front).toBe("Question 1");
     expect(out[1].noted).toEqual([b.id]);
+    // Every review in the window, lapse or not, for the app's summary.
+    const reviews = (out as unknown as { reviews: { cardId: string; rating: number }[] }[]).map((s) => s.reviews);
+    expect(reviews[0].map((r) => [r.cardId, r.rating])).toEqual([[c.id, 1], [a.id, 3]]);
+    expect(reviews[1].map((r) => r.cardId)).toEqual([a.id, b.id, a.id]);
   });
 
   it("grades, and the next card or the session's end aborts a grade still running", async () => {
@@ -320,6 +324,19 @@ describe("app handlers", () => {
     expect(Object.values(o.maturity).reduce((x, y) => x + y, 0)).toBe(5);
     expect(o.week).toHaveLength(7);
   });
+
+  it("expects only scheduled, unsuspended reviews on the days ahead", async () => {
+    const now = new Date();
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12);
+    await seed(2, { state: State.Review, due: tomorrow });
+    await seed(1, { due: tomorrow }); // New: no schedule yet
+    const [suspended] = await seed(1, { state: State.Review, due: tomorrow });
+    await getDb().card.update({ where: { id: suspended.id }, data: { suspended: true } });
+    const o = (await h.overview({})) as { load: { today: boolean; due: number }[] };
+    expect(o.load).toHaveLength(17);
+    expect(o.load[8]).toMatchObject({ today: true, due: 0 });
+    expect(o.load[9].due).toBe(2);
+  });
 });
 
 describe("overview helpers", () => {
@@ -339,6 +356,55 @@ describe("overview helpers", () => {
     ]);
     expect(week[6]).toEqual({ day: "2026-10-06", reviews: 2, again: 1 });
     expect(week[1].reviews).toBe(1);
+  });
+
+  it("buckets scheduled reviews into the local days after today", () => {
+    const now = new Date(2026, 9, 6, 12);
+    const forecast = bucketForecast(
+      [
+        { due: new Date(2026, 9, 6, 23) }, // today: pressure's figure
+        { due: new Date(2026, 9, 7, 0) },
+        { due: new Date(2026, 9, 7, 23) },
+        { due: new Date(2026, 9, 13, 23) },
+        { due: new Date(2026, 9, 14, 0) }, // past the last day
+      ],
+      now,
+      7
+    );
+    expect(forecast.map((d) => d.day)).toEqual([
+      "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13",
+    ]);
+    expect(forecast.map((d) => d.due)).toEqual([2, 0, 0, 0, 0, 0, 1]);
+  });
+
+  it("draws single days near today, then 2, 4 and 8 day totals", () => {
+    const now = new Date(2026, 9, 6, 12); // a Tuesday
+    const history = bucketWeek(
+      [
+        { reviewedAt: new Date(2026, 9, 6, 9), rating: 1 }, // today
+        { reviewedAt: new Date(2026, 9, 5, 9), rating: 3 }, // yesterday
+        { reviewedAt: new Date(2026, 8, 30, 9), rating: 1 }, // 6 days back: the 2d total
+        { reviewedAt: new Date(2026, 8, 29, 9), rating: 3 }, // 7 days back: the 2d total
+        { reviewedAt: new Date(2026, 8, 17, 9), rating: 3 }, // 19 days back: the 8d total's far edge
+      ],
+      now,
+      20
+    );
+    const forecast = bucketForecast(
+      [{ due: new Date(2026, 9, 7, 9) }, { due: new Date(2026, 9, 25, 9) }], // tomorrow, 19 days ahead
+      now,
+      19
+    );
+    const bars = loadBars(history, forecast, 3);
+    expect(bars.map((b) => b.label)).toEqual([
+      "8d", "4d", "2d", "Th", "Fr", "Sa", "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su", "2d", "4d", "8d",
+    ]);
+    expect(bars[0].reviews).toBe(1);
+    expect(bars[2]).toMatchObject({ reviews: 2, again: 1, due: 0 });
+    expect(bars[7].reviews).toBe(1);
+    expect(bars[8]).toEqual({ label: "Tu", reviews: 1, again: 1, due: 3, today: true });
+    expect(bars[9].due).toBe(1);
+    expect(bars[16].due).toBe(1);
   });
 
   it("formats a local day", () => {

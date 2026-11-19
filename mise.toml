@@ -1,0 +1,6 @@
+# The Ruby code cards run on (exercise-runners.ts asks `mise which ruby` in this
+# directory, whichever server asks). Pinned, not "latest": each Ruby keeps its
+# own gems, and cards `require "active_support/all"`, installed into this one.
+# Moving the pin means `mise exec ruby -- gem install activesupport` for the new one.
+[tools]
+ruby = "4.0.9"

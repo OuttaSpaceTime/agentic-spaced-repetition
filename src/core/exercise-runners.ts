@@ -3,6 +3,7 @@ import { access, mkdir, readFile, realpath, rename } from "fs/promises";
 import { createRequire } from "module";
 import { homedir } from "os";
 import { delimiter, dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { promisify } from "util";
 
 /**
@@ -52,13 +53,15 @@ function prefixBinds(bin: string): string[] {
 /**
  * The newest `name` this machine has: mise's when it has one, else the first on
  * the PATH. Not through mise's shims: a shim needs mise and its config, which the
- * sandbox hides.
+ * sandbox hides. Asked in this repo, so its mise.toml's pin (Ruby's) holds for the
+ * MCP server too, which runs in the study repo.
  */
 async function findOnMachine(name: string, envVar: string): Promise<string | null> {
   const given = process.env[envVar];
   if (given != null && given !== "") return realpath(given).catch(() => null);
   try {
-    const { stdout } = await promisify(execFile)("mise", ["which", name], { timeout: 5000 });
+    const cwd = fileURLToPath(new URL("../..", import.meta.url));
+    const { stdout } = await promisify(execFile)("mise", ["which", name], { timeout: 5000, cwd });
     if (stdout.trim() !== "") return await realpath(stdout.trim());
   } catch {
     // No mise, or it pins none: the PATH's, below.

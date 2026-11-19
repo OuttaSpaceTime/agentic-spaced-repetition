@@ -43,6 +43,14 @@ const postgres: Exercise = {
   cases: [{ expr: "SELECT n FROM big ORDER BY n", goal: "[[2], [3]]" }],
 };
 
+describe("ruby", () => {
+  // Cards require it; it lives in the Ruby mise.toml pins, not every Ruby.
+  it("has ActiveSupport, in the pinned Ruby", async () => {
+    const res = await runSandboxed({ lang: "ruby", source: 'require "active_support/all"', cases: [{ expr: "false.blank?", goal: "true" }] });
+    expect(res.report).toMatchObject({ error: null, cases: [{ pass: true }] });
+  });
+});
+
 describe("python", () => {
   it("evaluates a prediction by value, and is Good only once it is right", async () => {
     expect((await runExercise(python, ["[2]"])).status).toBe("wrong");

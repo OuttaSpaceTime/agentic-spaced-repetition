@@ -193,26 +193,33 @@ export function reviewCard(
  * also weighs each day's review count and draws at random; this keeps only the
  * weekday rule, deterministically, so a preview promises what the review gives
  * (the reason fuzz is off). Intervals under 3 days have no fuzz range in Anki
- * either, so a short one can still land on a minimum day.
+ * either, so a short one can still land on a minimum day. `after` drops the
+ * days due by then: a review's are all ahead of it, but `rescheduleEasyDays`
+ * moves cards scheduled long ago, whose range can reach into the past.
  */
-export function avoidEasyDays(card: SchedulableCard, elapsedDays: number, easyDays?: readonly number[]): SchedulableCard {
+export function avoidEasyDays(
+  card: SchedulableCard,
+  elapsedDays: number,
+  easyDays?: readonly number[],
+  after?: Date,
+): SchedulableCard {
   if (easyDays === undefined || card.state !== State.Review || card.interval < 3) return card;
   const { minInterval, maxInterval } = getFuzzRange(card.interval, elapsedDays, default_maximum_interval);
-  const load = (days: number) => {
+  const dueIn = (days: number) => {
     const d = new Date(card.due);
     d.setDate(d.getDate() + days - card.interval); // a calendar step, so DST moves nothing
-    return easyDays[(d.getDay() + 6) % 7]; // getDay is Sunday first, Anki's list Monday first
+    return d;
   };
+  const load = (days: number) => easyDays[(dueIn(days).getDay() + 6) % 7]; // getDay is Sunday first, Anki's list Monday first
   const distance = (days: number) => Math.abs(days - card.interval);
   let best = card.interval;
   // Ascending, and replaced only when strictly better, so a full tie keeps the shorter.
   for (let days = minInterval; days <= maxInterval; days++) {
+    if (after !== undefined && dueIn(days) <= after) continue;
     if (load(days) > load(best) || (load(days) === load(best) && distance(days) < distance(best))) best = days;
   }
   if (best === card.interval) return card;
-  const due = new Date(card.due);
-  due.setDate(due.getDate() + best - card.interval);
-  return { ...card, due, interval: best };
+  return { ...card, due: dueIn(best), interval: best };
 }
 
 /**

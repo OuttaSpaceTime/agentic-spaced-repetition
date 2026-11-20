@@ -149,7 +149,7 @@ Tab-separated format with `#separator`, `#html`, `#tags` and column header direc
 Live sync to AnkiWeb (for reviewing on the phone) is handled by [`scripts/anki-sync` in the study repo](../study), not by this codebase. It reads and writes `prisma/master.db` directly via SQLite and talks to AnkiWeb through a headless Anki bridge collection (fastanki / official `anki` Python package). The contract:
 
 - **One-way card push** — this repo owns card existence and content; the Anki note `guid` is the card's full CUID (note: the `.apkg` export above uses a different, truncated guid scheme).
-- **Bidirectional scheduling** — the side with the newer last review wins its whole FSRS block; `stability`/`difficulty` map natively to Anki's `memory_state`, no SM-2 conversion.
+- **Bidirectional scheduling** — the side with the newer last review wins its whole FSRS block; on a tie, a different due date is master's (a due moved without a review, e.g. `master easy-days --apply`); `stability`/`difficulty` map natively to Anki's `memory_state`, no SM-2 conversion.
 - **Append-only review history** — revlog and the `Review` table are unioned by (card, timestamp).
 
 Implications for this codebase: keep card CUIDs stable, and treat `Card` scheduling fields and `Review` rows as writable by the external sync (short transactions). Every delete writes a `DeletedCard` tombstone the sync reads. Datetimes the sync writes as epoch-ms are normalized to ISO text on every start.

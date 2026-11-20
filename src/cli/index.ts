@@ -35,6 +35,7 @@ import type { ImportResult } from "../core/card-import.js";
 import { dumpDatabase, restoreDatabase } from "../core/db-dump.js";
 import { checkCalibration } from "../core/calibration.js";
 import { getOverview } from "../core/overview.js";
+import { rescheduleEasyDays } from "../core/easy-days.js";
 import { localDay } from "../core/days.js";
 import { PACKAGE_VERSION } from "../core/version.js";
 
@@ -516,6 +517,18 @@ embCmd
     });
 
     console.log(`\n  Done: ${processed} embeddings generated, ${failed} failed.\n`);
+  });
+
+// --- easy-days ---
+program
+  .command("easy-days")
+  .description("Move already-scheduled reviews off Easy Days' reduced days, as a review would (a dry run without --apply)")
+  .option("--apply", "Write the moves")
+  .action(async (opts: { apply?: boolean }) => {
+    const moves = await rescheduleEasyDays(opts.apply === true);
+    const day = (d: Date) => `${localDay(d)} ${d.toLocaleDateString("en", { weekday: "short" })}`;
+    for (const m of moves) console.log(`  ${day(m.from)} → ${day(m.to)}  ${m.front.slice(0, 60).replace(/\s+/g, " ")}`);
+    console.log(`  ${moves.length} card(s) ${opts.apply === true ? "moved" : "would move (dry run; --apply to write)"}`);
   });
 
 // --- db:dump / db:restore / db:sync ---

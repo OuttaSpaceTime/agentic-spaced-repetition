@@ -81,6 +81,16 @@ async function newAvailableCount(): Promise<number> {
   return getDb().card.count({ where: NEW_CARD_WHERE });
 }
 
+/**
+ * Whether new cards are held back from studying: by the review backlog's
+ * verdict alone. A warn raised by intake (cards added today) is about creating
+ * cards; studying the ones already made adds no load, so it must not lock them
+ * away. One rule for the app's sessions and the overview's rest-day share.
+ */
+export function backlogHoldsNewBack(pressure: Pick<PressureReport, "flashcardsDue">): boolean {
+  return axisVerdict(pressure.flashcardsDue, WARN_FLASHCARDS, PAUSE_FLASHCARDS) !== "ok";
+}
+
 export function axisVerdict(count: number, warn: number, pause: number): PressureVerdict {
   if (count >= pause) return "pause";
   if (count >= warn) return "warn";

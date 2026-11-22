@@ -88,6 +88,12 @@ describe("app handlers", () => {
     expect(s.newHeldBack).toBe(0);
   });
 
+  it("refuses to study ahead with no rest day, whose overview has no share", async () => {
+    await seed(3);
+    await expect(h.startSession({ ahead: true })).rejects.toThrow(/rest days/);
+    expect(((await h.overview({})) as { ahead: unknown }).ahead).toBeNull();
+  });
+
   it("takes new cards at the default when pressure is ok", async () => {
     await seed(3);
     const ok = (await h.startSession({})) as { maxNewCards: number | null; newCards: number };

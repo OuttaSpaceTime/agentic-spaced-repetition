@@ -74,6 +74,11 @@ model Review {
   difficulty  Float
   elapsedDays Float
   reviewedAt  DateTime @default(now())
+  // The card's state just before this review (ts-fsrs State: 0 new, 1 learning,
+  // 2 review, 3 relearning), as Anki's revlog `type` records it; anki-sync
+  // carries it both ways. Null on rows from before it was kept. A rest day's
+  // share counts only reviews of Review cards (study-ahead.ts), not steps.
+  state       Int?
 
   @@index([cardId])
   @@index([reviewedAt])

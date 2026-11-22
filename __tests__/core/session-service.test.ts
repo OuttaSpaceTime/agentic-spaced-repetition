@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Grade } from "ts-fsrs";
 import { getTestDb } from "../setup.js";
 import {
@@ -10,6 +10,7 @@ import {
   adjustSession,
   skipCard,
   endSession,
+  currentAheadPlan,
 } from "../../src/core/session-service.js";
 import { deleteCard } from "../../src/core/card-service.js";
 import { createDeck } from "../../src/core/deck-service.js";
@@ -628,8 +629,9 @@ describe("session-service", () => {
 
     it("keeps position and total steady when a deleted card is topped up", async () => {
       await seedReviewCards(3);
-      const session = await startSession({ maxNewCardsPerSession: 0 });
-      await seedCards(1); // unqueued new card, available as the top-up
+      // Room for new cards, none there yet: the one seeded after is the top-up.
+      const session = await startSession();
+      await seedCards(1);
 
       const card1 = await getNextCard(session.id);
       await submitReview(session.id, card1!.id, Rating.Good);
@@ -1075,5 +1077,124 @@ describe("Anki's daily limits", () => {
     const s = await startSession();
     expect([s.reviewCount, s.newCount, s.reviewsHeldBack]).toEqual([1, 0, 3]);
     await getDb().config.delete({ where: { id: "default" } });
+  });
+});
+
+describe("rest days", () => {
+  // Weekends off; 2026-11-21 is a Saturday.
+  const saturday = new Date(2026, 10, 21, 10);
+  const monday = new Date(2026, 10, 23, 10);
+  const daysFrom = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, d.getHours());
+
+  beforeEach(async () => {
+    deckId = (await createDeck("TestDeck")).id;
+    const data = { easyDays: "[1,1,1,1,1,0,0]", newPerDay: 5, reviewsPerDay: 200 };
+    await getDb().config.upsert({ where: { id: "default" }, create: { id: "default", ...data }, update: data });
+  });
+  afterEach(async () => {
+    await getDb().config.deleteMany();
+  });
+
+  /** A review of each card at `at`, of a card in `state`: by default a first review, new cards studied then. */
+  async function studiedAt(cards: { id: string }[], at: Date, state: number = State.New) {
+    for (const c of cards)
+      await getDb().review.create({ data: { cardId: c.id, rating: 3, stability: 1, difficulty: 5, elapsedDays: 0, reviewedAt: at, state } });
+  }
+  const firstStudied = (cards: { id: string }[], at: Date) => studiedAt(cards, at);
+
+  /** Two reviews overdue since Friday, 26 due Monday on a 30-day interval, five new cards. */
+  async function week() {
+    const overdue = await seedCards(2, { state: State.Review, due: daysFrom(saturday, -1), stability: 5, lastReview: daysFrom(saturday, -7) });
+    const mondays = await seedCards(26, { state: State.Review, due: monday, stability: 30, lastReview: daysFrom(monday, -30) });
+    await seedCards(5);
+    return { overdue, mondays };
+  }
+
+  it("a rest day's share takes a seventh of the week in its mix, lowest retrievability first", async () => {
+    const { overdue } = await week();
+    const [step] = await seedCards(1, { state: State.Learning, due: daysFrom(saturday, 0) });
+    // 28 reviews and 5 new: 5 cards, 1 of them new; the learning step comes on top.
+    const plan = await currentAheadPlan(saturday);
+    expect(plan).toMatchObject({ learning: 1, reviews: 4, dueNow: 2, newCards: 1, newPerDay: 5, nextDayNew: 4 });
+    expect(plan?.days[0]).toEqual({ day: "2026-11-23", label: "Mo", due: 26, after: 24 });
+    expect(plan?.days.map((d) => d.label)).toEqual(["Mo", "Tu", "We", "Th", "Fr"]);
+
+    const s = await startSession({ ahead: true }, saturday);
+    expect([s.reviewCount, s.newCount]).toEqual([5, 1]);
+    expect(s.queue[0]).toEqual({ cardId: step.id, reason: "due_review" });
+    expect(new Set(s.queue.slice(1, 3).map((q) => q.cardId))).toEqual(new Set(overdue.map((c) => c.id)));
+    expect(s.queue.map((q) => q.reason)).toEqual(["due_review", "due_review", "due_review", "review_ahead", "review_ahead", "new_card"]);
+  });
+
+  it("is fixed for the day: once studied, nothing more is offered", async () => {
+    const { overdue, mondays } = await week();
+    const midnight = new Date(2026, 10, 21);
+    const done = [...overdue, ...mondays.slice(0, 2)];
+    // Reviews today of cards studied before, and one new card's first review.
+    await firstStudied(done, daysFrom(saturday, -30));
+    await studiedAt(done, new Date(midnight.getTime() + 3600_000), State.Review);
+    // Two leave the week; two land on Wednesday, still inside it, and count once.
+    for (const [i, c] of done.entries())
+      await getDb().card.update({ where: { id: c.id }, data: { due: daysFrom(saturday, i < 2 ? 40 : 4), lastReview: daysFrom(saturday, 0) } });
+    const [fresh] = await getDb().card.findMany({ where: { state: State.New } });
+    await firstStudied([fresh], new Date(midnight.getTime() + 7200_000));
+    await getDb().card.update({ where: { id: fresh.id }, data: { state: State.Learning, due: daysFrom(saturday, 1) } });
+
+    expect(await currentAheadPlan(saturday)).toMatchObject({ reviews: 0, newCards: 0, nextDayNew: 4 });
+  });
+
+  it("caps the share's new cards as the backlog says, in the plan as in the session", async () => {
+    await week();
+    expect(await currentAheadPlan(saturday, 0)).toMatchObject({ reviews: 4, newCards: 0, nextDayNew: 5 });
+    expect((await startSession({ ahead: true, maxNewCardsPerSession: 0 }, saturday)).newCount).toBe(0);
+  });
+
+  it("never counts learning steps studied today against the share", async () => {
+    await week();
+    // Lapsed on Friday, their relearning steps carried into Saturday.
+    const lapsed = await seedCards(3, { state: State.Relearning, due: daysFrom(saturday, 1) });
+    await studiedAt(lapsed, daysFrom(saturday, -1), State.Review);
+    await studiedAt(lapsed, daysFrom(saturday, 0), State.Relearning);
+    expect(await currentAheadPlan(saturday)).toMatchObject({ reviews: 4, newCards: 1 });
+  });
+
+  it("has no share when every day is a rest day", async () => {
+    await getDb().config.update({ where: { id: "default" }, data: { easyDays: "[0,0,0,0,0,0,0]" } });
+    await week();
+    expect(await currentAheadPlan(saturday)).toBeNull();
+  });
+
+  it("replaces a deleted card with a new one only while the session's new allowance lasts", async () => {
+    await week();
+    const s = await startSession({}, saturday);
+    const first = s.queue[0].cardId;
+    await deleteCard(first);
+    // A rest day brings no new cards, and a delete must not bring one either.
+    const served = await getNextCard(s.id);
+    expect(served?.id).toBe(s.queue[1].cardId);
+    expect((await getQueuePosition(s.id))?.total).toBe(1);
+  });
+
+  it("refuses to study ahead on a study day, and has no plan there", async () => {
+    await week();
+    await expect(startSession({ ahead: true }, monday)).rejects.toThrow(/rest days/);
+    expect(await currentAheadPlan(monday)).toBeNull();
+  });
+
+  it("a plain session on a rest day brings the due reviews, no new cards", async () => {
+    await week();
+    const s = await startSession({}, saturday);
+    expect([s.reviewCount, s.newCount]).toEqual([2, 0]);
+  });
+
+  it("new cards studied on rest days come off the study days after them", async () => {
+    const fresh = await seedCards(12);
+    // Saturday and Sunday took 7: Monday gives up its 5, Tuesday 2, Wednesday none.
+    await firstStudied(fresh.slice(0, 4), saturday);
+    await firstStudied(fresh.slice(4, 7), daysFrom(saturday, 1));
+    for (const c of fresh.slice(0, 7)) await getDb().card.update({ where: { id: c.id }, data: { state: State.Review, due: daysFrom(saturday, 30) } });
+    expect((await startSession({}, monday)).newCount).toBe(0);
+    expect((await startSession({}, daysFrom(monday, 1))).newCount).toBe(3);
+    expect((await startSession({}, daysFrom(monday, 2))).newCount).toBe(5);
   });
 });

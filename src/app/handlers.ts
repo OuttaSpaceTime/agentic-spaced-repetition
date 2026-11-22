@@ -22,7 +22,7 @@ import { getOverview } from "../core/overview.js";
 import { recentSessions } from "../core/recent-sessions.js";
 import { listCardNotes, setCardNote } from "../core/card-notes.js";
 import { localDay } from "../core/days.js";
-import { axisVerdict, PAUSE_FLASHCARDS, WARN_FLASHCARDS } from "../core/pressure.js";
+import { backlogHoldsNewBack } from "../core/pressure.js";
 import { clozeSides } from "../core/cloze.js";
 import { exerciseView, parseExercise, revealExercise, runExercise, type ExerciseView } from "../core/exercises.js";
 
@@ -119,14 +119,13 @@ export function createHandlers(deps: { gradeCall?: GradeCall } = {}): Record<str
   return {
     overview: async (p) => getOverview({ pendingLimit: optNum(p, "pendingLimit") }),
 
-    startSession: async () => {
+    // `ahead: true` on a rest day studies ahead (core study-ahead.ts): the share
+    // the overview's `ahead` describes, its new cards capped by the same rule.
+    startSession: async (p) => {
       const pressure = await checkPressure();
-      // Only the review backlog holds new cards back. A warn raised by intake
-      // (cards added today) is about creating cards; studying the ones already
-      // made adds no load, so it must not lock them away.
-      const backlog = axisVerdict(pressure.flashcardsDue, WARN_FLASHCARDS, PAUSE_FLASHCARDS);
-      const maxNewCards = backlog === "ok" ? undefined : 0;
-      const session = await startSession({ maxNewCardsPerSession: maxNewCards });
+      // Only the review backlog holds new cards back (pressure.ts).
+      const maxNewCards = backlogHoldsNewBack(pressure) ? 0 : undefined;
+      const session = await startSession({ maxNewCardsPerSession: maxNewCards, ahead: p.ahead === true });
       return {
         sessionId: session.id,
         total: session.queue.length,
@@ -135,6 +134,7 @@ export function createHandlers(deps: { gradeCall?: GradeCall } = {}): Record<str
         maxNewCards: maxNewCards ?? null,
         newHeldBack: maxNewCards === 0 ? pressure.newAvailable : 0,
         reviewsHeldBack: session.reviewsHeldBack,
+        ahead: p.ahead === true,
         pressure,
       };
     },

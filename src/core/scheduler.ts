@@ -13,6 +13,7 @@ import {
   type Steps,
 } from "ts-fsrs";
 import type { CardMaturity } from "./types.js";
+import { easyDayIndex } from "./rest-days.js";
 
 export type SchedulableCard = {
   due: Date;
@@ -210,7 +211,7 @@ export function avoidEasyDays(
     d.setDate(d.getDate() + days - card.interval); // a calendar step, so DST moves nothing
     return d;
   };
-  const load = (days: number) => easyDays[(dueIn(days).getDay() + 6) % 7]; // getDay is Sunday first, Anki's list Monday first
+  const load = (days: number) => easyDays[easyDayIndex(dueIn(days))];
   const distance = (days: number) => Math.abs(days - card.interval);
   let best = card.interval;
   // Ascending, and replaced only when strictly better, so a full tie keeps the shorter.

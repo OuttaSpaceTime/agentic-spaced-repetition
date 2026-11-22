@@ -9,6 +9,8 @@ import {
   type SchedulerParams,
 } from "./scheduler.js";
 import { dueReviewWhere, NEW_CARD_WHERE } from "./pressure.js";
+import { newBorrowedToday, planAhead, type AheadPlan } from "./study-ahead.js";
+import { isRestDay } from "./rest-days.js";
 import { MS_PER_DAY, startOfLocalDay } from "./days.js";
 import type { MasterConfig, SessionQueueItem, SessionAdjustment } from "./types.js";
 import { Rating, State, type Grade, type Steps } from "ts-fsrs";
@@ -32,6 +34,13 @@ interface SessionState {
   category?: string;
   /** Deck filter (id) the session was started with, for new-card top-ups. */
   deckId?: string;
+  /**
+   * New cards the session may still take in to replace deleted cards: its new
+   * allowance (the daily limit, a rest day's 0, a share's borrowings) less the
+   * new cards it queued. A deleted new card gives its place back. Absent from a
+   * state saved before it existed: top-ups as before.
+   */
+  newRoom?: number;
 }
 
 /** The cards a session draws from, given the filters it was started with. */
@@ -176,9 +185,9 @@ async function readConfig(): Promise<Config> {
  * shortcut: one count over every deck, which is Anki's per-deck limit while all
  * cards live in one deck; scope it by deck if they ever spread out.
  */
-async function studiedToday(): Promise<{ newCards: number; reviews: number }> {
+async function studiedToday(now: Date): Promise<{ newCards: number; reviews: number }> {
   const db = getDb();
-  const midnight = startOfLocalDay(new Date());
+  const midnight = startOfLocalDay(now);
   const ids = (
     await db.review.findMany({ where: { reviewedAt: { gte: midnight } }, select: { cardId: true }, distinct: ["cardId"] })
   ).map((r) => r.cardId);
@@ -203,14 +212,32 @@ export interface StartSessionResult {
   reviewsHeldBack: number;
 }
 
+/**
+ * A rest day's share, as it stands now (study-ahead.ts), or null on a study
+ * day. `maxNew` caps its new cards, as a session's override does.
+ */
+export async function currentAheadPlan(now: Date = new Date(), maxNew?: number): Promise<AheadPlan | null> {
+  const saved = await readConfig();
+  const ahead = await planAhead({ params: schedulerParams(saved), newPerDay: saved.newPerDay, newToday: (await studiedToday(now)).newCards, maxNew }, now);
+  return ahead?.plan ?? null;
+}
+
+/**
+ * A session. With `ahead`, a rest day's share instead (study-ahead.ts): the
+ * learning steps due, the reviews ahead and the borrowed new cards it holds,
+ * with no session caps (the share is the cap) and no category or deck; it
+ * throws on a study day, where there is nothing to be ahead of.
+ */
 export async function startSession(
-  configOverrides?: Partial<MasterConfig> & { category?: string; deckId?: string }
+  configOverrides?: Partial<MasterConfig> & { category?: string; deckId?: string; ahead?: boolean },
+  now: Date = new Date(),
 ): Promise<StartSessionResult> {
   const db = getDb();
   await discardEmptySessions();
   reviewUndos.clear();
 
-  const { category, deckId, ...overrides } = configOverrides ?? {};
+  const { category, deckId, ahead, ...overrides } = configOverrides ?? {};
+  if (ahead === true) return startAheadSession(overrides.maxNewCardsPerSession, now);
   const filters = {
     category: category != null && category !== "" ? category : undefined,
     deckId: deckId != null && deckId !== "" ? deckId : undefined,
@@ -226,20 +253,20 @@ export async function startSession(
   };
 
   const dueReviewCards = await db.card.findMany({
-    where: { ...dueReviewWhere(), ...scope },
+    where: { ...dueReviewWhere(now), ...scope },
     orderBy: { due: "asc" },
   });
 
   const rankedReviews = dueReviewCards
     .map((card) => ({
       card,
-      retrievability: getRetrievability(toSchedulableCard(card), undefined, params),
+      retrievability: getRetrievability(toSchedulableCard(card), now, params),
     }))
     .sort((a, b) => a.retrievability - b.retrievability);
 
   // Anki's daily limits (deck options, mirrored by anki-sync) on top of the
   // session's own caps, so several sessions in a day stop where Anki would.
-  const today = await studiedToday();
+  const today = await studiedToday(now);
   const reviewBudget = Math.max(0, saved.reviewsPerDay - today.reviews - (saved.newCardsIgnoreReviewLimit ? 0 : today.newCards));
   // Learning steps are minutes, intraday in Anki, which never limits those.
   const dueReviews = rankedReviews.filter((r) => r.card.state === State.Review).length;
@@ -255,7 +282,12 @@ export async function startSession(
   }
 
   // Reduce new card allowance when review-heavy
-  let maxNew = Math.min(config.maxNewCardsPerSession, Math.max(0, saved.newPerDay - today.newCards));
+  // A rest day brings no new cards (study ahead borrows them instead), and the
+  // study days after it give up what it borrowed (rest-days.ts).
+  const borrowed = await newBorrowedToday(params, saved.newPerDay, now);
+  let maxNew = isRestDay(params.easyDays, now)
+    ? 0
+    : Math.min(config.maxNewCardsPerSession, Math.max(0, saved.newPerDay - today.newCards - borrowed));
   // Off (Anki's default), new cards count toward the review limit and get only what
   // every due review leaves, not just this session's: a backlog keeps them out.
   if (!saved.newCardsIgnoreReviewLimit) maxNew = Math.min(maxNew, Math.max(0, reviewBudget - dueReviews));
@@ -286,6 +318,7 @@ export async function startSession(
     reviewed: 0,
     goodCount: 0,
     dropped: 0,
+    newRoom: Math.max(0, maxNew - newCards.length),
     ...filters,
   };
   const session = await db.studySession.create({ data: { queueState: JSON.stringify(state) } });
@@ -297,6 +330,23 @@ export async function startSession(
     newCount: newCards.length,
     reviewCount: reviewQueue.length,
     reviewsHeldBack: Math.max(0, dueReviews - reviewBudget),
+  };
+}
+
+async function startAheadSession(maxNew: number | undefined, now: Date): Promise<StartSessionResult> {
+  const saved = await readConfig();
+  const ahead = await planAhead({ params: schedulerParams(saved), newPerDay: saved.newPerDay, newToday: (await studiedToday(now)).newCards, maxNew }, now);
+  if (ahead == null) throw new Error("Studying ahead is for rest days: Easy Days at Minimum in the Anki deck options");
+  // A share's new cards are its borrowings: a deleted one may be replaced, no more.
+  const state: SessionState = { queue: ahead.queue, pointer: 0, reviewed: 0, goodCount: 0, dropped: 0, newRoom: 0 };
+  const session = await getDb().studySession.create({ data: { queueState: JSON.stringify(state) } });
+  sessions.set(session.id, state);
+  return {
+    id: session.id,
+    queue: ahead.queue,
+    newCount: ahead.plan.newCards,
+    reviewCount: ahead.plan.learning + ahead.plan.reviews,
+    reviewsHeldBack: 0,
   };
 }
 
@@ -338,6 +388,7 @@ export async function getNextCardOrBlock(sessionId: string): Promise<NextCard> {
     state.pointer += 1;
     state.dropped += 1;
     skippedDeleted = true;
+    if (state.newRoom !== undefined && (item.reason === "new_card" || item.reason === "unguided_priority")) state.newRoom += 1;
     await topUpNewCard(state);
   }
 
@@ -382,9 +433,12 @@ export async function getQueuePosition(sessionId: string): Promise<QueuePosition
 /**
  * Append one fresh new card to a session's queue, replacing a card that was
  * deleted mid-session. Picks the oldest unqueued New card, respecting the
- * session's category and deck filters; does nothing when none is available.
+ * session's category and deck filters; does nothing when none is available,
+ * or when the session's new allowance is used up (`newRoom`): a delete must not
+ * bring a new card on a rest day, or past what the weekend borrowed.
  */
 async function topUpNewCard(state: SessionState): Promise<void> {
+  if (state.newRoom === 0) return;
   const replacement = await getDb().card.findFirst({
     where: {
       ...NEW_CARD_WHERE,
@@ -395,6 +449,7 @@ async function topUpNewCard(state: SessionState): Promise<void> {
   });
   if (replacement) {
     state.queue.push({ cardId: replacement.id, reason: "new_card" });
+    if (state.newRoom !== undefined) state.newRoom -= 1;
   }
 }
 
@@ -511,6 +566,7 @@ export async function submitReview(
         stability: result.card.stability,
         difficulty: result.card.difficulty,
         elapsedDays: result.elapsedDays,
+        state: card.state,
       },
     }),
     db.studySession.update({

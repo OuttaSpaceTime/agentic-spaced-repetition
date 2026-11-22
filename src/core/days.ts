@@ -33,3 +33,9 @@ export function localDay(d: Date, timeZone: string = systemTimeZone()): string {
 export function startOfLocalDay(d: Date, daysBack = 0): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() - daysBack);
 }
+
+/** A local day's weekday, two letters ("Mo"), from its YYYY-MM-DD key. */
+export function weekdayLabel(day: string): string {
+  // Noon, so no time zone or DST change can move it onto another day.
+  return new Date(`${day}T12:00:00`).toLocaleDateString("en", { weekday: "short" }).slice(0, 2);
+}

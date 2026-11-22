@@ -1,12 +1,14 @@
 import { State } from "ts-fsrs";
 import { getDb } from "../db/client.js";
-import { checkPressure, dueReviewWhere, type PressureReport } from "./pressure.js";
+import { backlogHoldsNewBack, checkPressure, dueReviewWhere, type PressureReport } from "./pressure.js";
 import { checkCalibration, type CalibrationReport } from "./calibration.js";
 import { getStudyStreak } from "./analytics-service.js";
 import { cardMaturity } from "./scheduler.js";
 import type { CardMaturity } from "./types.js";
 import { visibleText } from "./content-rules.js";
-import { localDay, startOfLocalDay } from "./days.js";
+import { localDay, startOfLocalDay, weekdayLabel } from "./days.js";
+import { currentAheadPlan } from "./session-service.js";
+import type { AheadPlan } from "./study-ahead.js";
 
 /**
  * A rough picture of where studying stands: what is pending, how retention is
@@ -67,6 +69,11 @@ export interface Overview {
   reviewedToday: number;
   /** Due review cards, most overdue first; new cards are a pool, not pending. */
   pending: PendingCard[];
+  /**
+   * On a rest day (Easy Days at Minimum), the share of the week it offers to
+   * study ahead (study-ahead.ts); null on a study day.
+   */
+  ahead: AheadPlan | null;
 }
 
 /**
@@ -115,11 +122,6 @@ const LOAD_DAYS = LOAD_SPANS.reduce((sum, n) => sum + n, 0);
 function spans<T>(days: readonly T[]): T[][] {
   let at = 0;
   return LOAD_SPANS.map((n) => days.slice(at, (at += n)));
-}
-
-function weekdayLabel(day: string): string {
-  // Noon, so no time zone or DST change can move it onto another day.
-  return new Date(`${day}T12:00:00`).toLocaleDateString("en", { weekday: "short" }).slice(0, 2);
 }
 
 function spanLabel(run: readonly { day: string }[]): string {
@@ -174,6 +176,8 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
       take: opts.pendingLimit ?? 8,
     }),
   ]);
+  // The share with the new cards a session would give it: none while the backlog holds them back.
+  const ahead = await currentAheadPlan(now, backlogHoldsNewBack(pressure) ? 0 : undefined);
 
   // Suspended cards are out of rotation: neither in the buckets nor the total,
   // so the buckets always sum to totalCards.
@@ -194,5 +198,6 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
     load: loadBars(bucketWeek(reviews, now, LOAD_DAYS + 1), forecast, pressure.flashcardsDue),
     reviewedToday: week[week.length - 1]?.reviews ?? 0,
     pending: pending.map((c) => ({ deck: c.deck.name, text: visibleText(c.front), lapses: c.lapses })),
+    ahead,
   };
 }

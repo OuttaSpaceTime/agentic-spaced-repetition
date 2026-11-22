@@ -17,7 +17,7 @@ export type CardStateName = (typeof CARD_STATE_NAMES)[number];
 
 export interface SessionQueueItem {
   cardId: string;
-  reason: "due_review" | "new_card" | "unguided_priority" | "learning_repeat";
+  reason: "due_review" | "review_ahead" | "new_card" | "unguided_priority" | "learning_repeat";
 }
 
 export interface SessionAdjustment {

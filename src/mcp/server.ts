@@ -3,11 +3,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { createClient, setDb } from "../db/client.js";
-import { prepareDatabase } from "../db/prepare.js";
-import { listDeckStats, getDeckStats, deleteDeck } from "../core/deck-service.js";
-import { cardMaturity } from "../core/scheduler.js";
 import {
+  openDeck,
+  listDeckStats,
+  getDeckStats,
+  deleteDeck,
+  cardMaturity,
   createCard,
   createCodeCard,
   getCard,
@@ -23,9 +24,8 @@ import {
   getDueCards,
   countDueCards,
   findSimilar,
-} from "../core/card-service.js";
-import { CARD_STATE_NAMES, parseTags } from "../core/types.js";
-import {
+  CARD_STATE_NAMES,
+  parseTags,
   startSession,
   getNextCard,
   getQueuePosition,
@@ -33,17 +33,15 @@ import {
   skipCard,
   adjustSession,
   endSession,
-} from "../core/session-service.js";
-import {
   getFullStats,
   getSessionHistory,
-} from "../core/analytics-service.js";
-import { checkPressure } from "../core/pressure.js";
-import { checkCalibration } from "../core/calibration.js";
-import { deferLeech, leechPayload } from "../core/leeches.js";
-import { listCardNotes, resolveCardNote } from "../core/card-notes.js";
-import { PACKAGE_VERSION } from "../core/version.js";
-import {
+  checkPressure,
+  checkCalibration,
+  deferLeech,
+  leechPayload,
+  listCardNotes,
+  resolveCardNote,
+  PACKAGE_VERSION,
   EXERCISE_KINDS,
   LANGS,
   checkExercise,
@@ -51,7 +49,7 @@ import {
   parseExercise,
   revealExercise,
   runExercise,
-} from "../core/exercises.js";
+} from "../sdk/index.js";
 
 /** A code card's exercise (src/core/exercises.ts). */
 const EXERCISE_SCHEMA = z.object({
@@ -732,9 +730,7 @@ export function createServer(): McpServer {
 }
 
 async function main(): Promise<void> {
-  const db = createClient();
-  setDb(db);
-  await prepareDatabase(db);
+  await openDeck();
   await createServer().connect(new StdioServerTransport());
 }
 

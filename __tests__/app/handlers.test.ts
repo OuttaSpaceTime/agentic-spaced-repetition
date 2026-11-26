@@ -607,3 +607,51 @@ describe("code cards", () => {
     await expect(updateCodeCard(cardId, { ...exercise, kind: "compose" })).rejects.toThrow(/inheritFrom/);
   });
 });
+
+describe("plain-data methods for other languages' callers", () => {
+  const h = createHandlers();
+  const run = (method: string, params: Record<string, unknown> = {}) => h[method](params);
+
+  beforeEach(async () => {
+    deckId = (await createDeck("Plain")).id;
+  });
+
+  it("answers over the wire as JSON, dates as ISO strings", async () => {
+    const [card] = await seed(1);
+    const line = await dispatch(h, JSON.stringify({ id: 1, method: "cardRecords", params: { ids: [card.id] } }));
+    const { result } = JSON.parse(line!) as { result: { id: string; due: string; tags: string[]; deck: string }[] };
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: card.id, deck: "Plain", tags: ["http", "web"] });
+    expect(new Date(result[0].due).toISOString()).toBe(result[0].due);
+  });
+
+  it("cardRecords validates its params like the other methods", async () => {
+    await expect(run("cardRecords", { ids: "abc" })).rejects.toThrow(/ids must be an array of strings/);
+    await expect(run("cardRecords", { inheritedFrom: 5 })).rejects.toThrow(/inheritedFrom must be a string/);
+    await expect(run("cardRecords", { includeSuspended: "no" })).rejects.toThrow(/includeSuspended must be a boolean/);
+    await expect(run("reviewRecords", { cardIds: [1] })).rejects.toThrow(/cardIds must be an array of strings/);
+  });
+
+  it("reviewRecords, tombstones, calibration and deckOverview return what their cores do", async () => {
+    const [card, gone] = await seed(2);
+    await getDb().review.create({ data: { cardId: card.id, rating: 3, stability: 1, difficulty: 5, elapsedDays: 1 } });
+    await run("deleteCard", { cardId: gone.id });
+
+    expect(await run("reviewRecords", { cardIds: [card.id] })).toMatchObject([{ cardId: card.id, rating: 3 }]);
+    expect(await run("tombstones")).toEqual([gone.id]);
+    expect(await run("calibration")).toMatchObject({ verdict: "low-signal", window_days: 30, reviews: 1 });
+    expect(await run("deckOverview")).toMatchObject({ total: 1, deckCount: 1 });
+  });
+
+  it("syncApply applies a plan and counts each part", async () => {
+    const [card] = await seed(1);
+    const result = await run("syncApply", {
+      schedules: [{ cardId: card.id, due: "2026-10-01T04:00:00.000Z", stability: 6, difficulty: 4, reps: 3, lapses: 0, state: 2, lastReview: "2026-09-20T10:00:00.000Z", interval: 11 }],
+      reviews: [{ cardId: card.id, reviewedAt: "2026-09-20T10:00:00.000Z", rating: 3, responseMs: null, state: 2 }],
+      deletions: [],
+    });
+    expect(result).toEqual({ schedules: 1, reviews: 1, reviewsSkipped: { present: 0, noCard: 0 }, imports: { imported: 0, rejected: [] }, deletions: 0, schedulerOptions: [] });
+    expect(await run("syncApply", {})).toMatchObject({ schedules: 0, reviews: 0 });
+    await expect(run("syncApply", { schedules: [{}] })).rejects.toThrow(/schedules\[0\]/);
+  });
+});

@@ -1,4 +1,4 @@
-import type { Deck } from "@prisma/client";
+import type { Deck, Prisma, PrismaClient } from "@prisma/client";
 import { State } from "ts-fsrs";
 import { getDb } from "../db/client.js";
 import { dueClause } from "./due.js";
@@ -109,13 +109,13 @@ export async function deleteDeck(deckId: string): Promise<{ deletedCards: number
   });
 }
 
-export async function getDeckByName(name: string) {
-  const db = getDb();
-  return db.deck.findUnique({ where: { name } });
-}
-
-export async function getOrCreateDeck(name: string, description?: string) {
-  const db = getDb();
+/** `client` lets a caller inside a transaction create the deck in it. */
+export async function getOrCreateDeck(
+  name: string,
+  description?: string,
+  client: PrismaClient | Prisma.TransactionClient = getDb()
+) {
+  const db = client;
   return db.deck.upsert({
     where: { name },
     create: { name, description: description ?? null },

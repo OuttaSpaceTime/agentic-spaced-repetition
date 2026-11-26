@@ -53,8 +53,8 @@ export interface RatingMix {
 }
 
 /**
- * The report as printed by `master calibration` and returned by
- * `check_calibration`. Field names are snake_case because this object is a wire
+ * The report returned by `check_calibration` and the app server's
+ * `calibration` method. Field names are snake_case because this object is a wire
  * format: the study repo's /study skill parses it by name, so renaming a field
  * breaks that consumer.
  */

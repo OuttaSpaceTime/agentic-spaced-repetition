@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
-import { createClient, setDb } from "../db/client.js";
-import { prepareDatabase } from "../db/prepare.js";
+import { openDeck } from "../sdk/index.js";
 import { createHandlers, type Handler } from "./handlers.js";
 
 /**
@@ -55,9 +54,7 @@ export async function dispatch(
 
 async function main(): Promise<void> {
   console.log = (...args: unknown[]) => console.error(...args);
-  const db = createClient();
-  setDb(db);
-  await prepareDatabase(db);
+  await openDeck();
   const handlers = createHandlers();
 
   const write = (s: string): void => {

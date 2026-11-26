@@ -21,12 +21,6 @@ import { assertExerciseWorks, exerciseSides, parseExercise, type Exercise } from
 import type { Card as PrismaCard, Prisma } from "@prisma/client";
 import type { State } from "ts-fsrs";
 
-/**
- * A card's whole schedule brought in from elsewhere (an .apkg import): the
- * FSRS block plus suspension, written as is.
- */
-export type CarriedSchedule = SchedulableCard & { suspended: boolean };
-
 interface CreateCardInput {
   deckId: string;
   front: string;
@@ -42,12 +36,10 @@ interface CreateCardInput {
    * keeps the parent's learned schedule instead of resetting to a fresh New card.
    */
   inheritFrom?: string;
-  /** The schedule a card brings with it from an import; ignored with `inheritFrom`. */
-  schedule?: CarriedSchedule;
   /**
    * Skip the per-card SRS pressure gate. Only for batch writers that check
-   * pressure once up front for the whole batch (importCards in card-import.ts),
-   * so an import is refused atomically instead of aborting half-applied.
+   * pressure once up front for the whole batch, so it is refused atomically
+   * instead of aborting half-applied.
    */
   skipPressureGate?: boolean;
   /** Set only by createCodeCard, which wrote and checked the two sides itself. */
@@ -107,11 +99,10 @@ export async function createCard(input: CreateCardInput): Promise<CreateCardResu
     await assertCanCreateCard();
   }
 
-  // Scheduling block: fresh FSRS defaults or the one an import carries, unless
-  // deriving from a parent card (split) — then inherit the parent's learned
-  // schedule so the new card keeps its place in the queue instead of
-  // resurfacing immediately.
-  let schedule: SchedulableCard = input.schedule ?? createNewFsrsCard();
+  // Scheduling block: fresh FSRS defaults, unless deriving from a parent card
+  // (split) — then inherit the parent's learned schedule so the new card keeps
+  // its place in the queue instead of resurfacing immediately.
+  let schedule: SchedulableCard = createNewFsrsCard();
   if (input.inheritFrom != null) {
     const parent = await db.card.findUnique({ where: { id: input.inheritFrom } });
     if (parent == null) {
@@ -171,7 +162,6 @@ export async function createCard(input: CreateCardInput): Promise<CreateCardResu
       lastReview: schedule.lastReview,
       interval: schedule.interval,
       learningStep: schedule.learningStep ?? 0,
-      suspended: input.inheritFrom == null && input.schedule?.suspended === true,
     },
   });
 
@@ -226,58 +216,6 @@ function assertSameAnkiShape(card: PrismaCard, front: string): void {
   );
 }
 
-export async function backfillEmbeddings(
-  onProgress?: (done: number, total: number) => void
-): Promise<{ processed: number; failed: number }> {
-  const db = getDb();
-  const cards = await db.card.findMany({
-    where: { embedding: null },
-    select: { id: true, front: true, back: true },
-  });
-
-  let processed = 0;
-  let failed = 0;
-
-  for (const card of cards) {
-    const emb = await getEmbedding(cardEmbeddingText(card.front, card.back));
-    if (emb) {
-      await db.card.update({
-        where: { id: card.id },
-        data: { embedding: JSON.stringify(emb) },
-      });
-      processed++;
-    } else {
-      failed++;
-    }
-
-    onProgress?.(processed + failed, cards.length);
-  }
-
-  return { processed, failed };
-}
-
-/** How many cards have an embedding, out of all of them. */
-export async function embeddingCoverage(): Promise<{ total: number; embedded: number }> {
-  const db = getDb();
-  const [total, embedded] = await Promise.all([
-    db.card.count(),
-    db.card.count({ where: { embedding: { not: null } } }),
-  ]);
-  return { total, embedded };
-}
-
-/** Every category in use (null: uncategorized) with its card count. */
-export async function listCategories(): Promise<Array<{ category: string | null; cards: number }>> {
-  const rows = await getDb().card.groupBy({ by: ["category"], _count: { _all: true } });
-  return rows.map((row) => ({ category: row.category, cards: row._count._all }));
-}
-
-/** Put every card of a deck in `category`; returns how many cards that was. */
-export async function setDeckCategory(deckId: string, category: string): Promise<number> {
-  const res = await getDb().card.updateMany({ where: { deckId }, data: { category } });
-  return res.count;
-}
-
 export async function getCard(id: string): Promise<PrismaCard | null> {
   const db = getDb();
   return db.card.findUnique({ where: { id } });
@@ -285,9 +223,7 @@ export async function getCard(id: string): Promise<PrismaCard | null> {
 
 /**
  * Edit a card. Content is checked, an answered leech flag is cleared, and the
- * embedding follows a changed front or back. `schedule` replaces the whole
- * schedule (an import's --theirs side); its lapse count wins over the flag
- * clearing's reset, since it is the history the card now carries.
+ * embedding follows a changed front or back.
  */
 export async function updateCard(
   id: string,
@@ -296,7 +232,6 @@ export async function updateCard(
     back?: string;
     tags?: string;
     category?: string | null;
-    schedule?: CarriedSchedule;
   }
 ): Promise<PrismaCard> {
   assertCardContent({ front: updates.front, back: updates.back });
@@ -307,10 +242,9 @@ export async function updateCard(
       throw new Error("A code card's front and back are written from its exercise: use update_code_card.");
     }
   }
-  const { schedule, ...fields } = updates;
   const updated = await db.card.update({
     where: { id },
-    data: { ...fields, ...(await leechResolutionFor(id)), ...schedule },
+    data: { ...updates, ...(await leechResolutionFor(id)) },
   });
 
   if (updates.front !== undefined || updates.back !== undefined) {

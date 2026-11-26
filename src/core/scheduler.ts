@@ -137,6 +137,33 @@ function fromFsrsCard(fsrsCard: FsrsCard): SchedulableCard {
   };
 }
 
+/** Neutral FSRS difficulty (1-10 scale, midpoint) for a card that arrives with no way to infer one. */
+const DEFAULT_DIFFICULTY = 5;
+
+/**
+ * Stability and difficulty for a card whose source (Anki, which computes FSRS
+ * memory only for cards reviewed under FSRS) gave none, or only one of them.
+ *
+ * Writing 0 for "unknown" is indistinguishable from the corruption sentinel
+ * `sanitizeForReview` resets to a fresh New card, discarding the card's reps and
+ * lapses, so a non-New card never gets 0 here: its existing interval, calibrated
+ * for roughly the retention FSRS assumes, stands in for stability, floored at one
+ * day so it can't collide with the sentinel. A New card has no memory yet, and
+ * 0/0 is the right value for it.
+ */
+export function fallbackMemoryState(card: {
+  state: number;
+  interval: number;
+  stability?: number | null;
+  difficulty?: number | null;
+}): { stability: number; difficulty: number } {
+  if (card.stability != null && card.difficulty != null) {
+    return { stability: card.stability, difficulty: card.difficulty };
+  }
+  if (card.state === State.New) return { stability: 0, difficulty: 0 };
+  return { stability: Math.max(card.interval, 1), difficulty: DEFAULT_DIFFICULTY };
+}
+
 /**
  * A non-New card must have a positive, finite stability. If it doesn't
  * (stability 0/negative/NaN — a corruption that ts-fsrs's forgetting curve

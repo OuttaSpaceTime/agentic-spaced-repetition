@@ -1,6 +1,5 @@
-import type { Card as PrismaCard, CardNote } from "@prisma/client";
-import { isGrade } from "../core/scheduler.js";
 import {
+  isGrade,
   startSession,
   getNextCardOrBlock,
   getQueuePosition,
@@ -9,22 +8,45 @@ import {
   previewSchedules,
   skipCard,
   endSession,
-} from "../core/session-service.js";
-import { checkPressure } from "../core/pressure.js";
-import { allCards, deleteCard, getCard, getCodeCardExercise, searchCards } from "../core/card-service.js";
-import { deckNames } from "../core/deck-service.js";
-import { recentlyStudied } from "../core/analytics-service.js";
-import { changeTokens } from "../core/change-tokens.js";
-import { deferLeech, leechPayload } from "../core/leeches.js";
-import { CARD_STATE_NAMES, parseTags, type CardStateName } from "../core/types.js";
-import { Grader, type GradeCall } from "../core/grading.js";
-import { getOverview } from "../core/overview.js";
-import { recentSessions } from "../core/recent-sessions.js";
-import { listCardNotes, setCardNote } from "../core/card-notes.js";
-import { localDay } from "../core/days.js";
-import { backlogHoldsNewBack, backlogNewCap } from "../core/pressure.js";
-import { clozeSides } from "../core/cloze.js";
-import { exerciseView, parseExercise, revealExercise, runExercise, type ExerciseView } from "../core/exercises.js";
+  checkPressure,
+  checkCalibration,
+  allCards,
+  deleteCard,
+  getCard,
+  getCodeCardExercise,
+  searchCards,
+  deckNames,
+  recentlyStudied,
+  changeTokens,
+  deferLeech,
+  leechPayload,
+  CARD_STATE_NAMES,
+  parseTags,
+  Grader,
+  getOverview,
+  recentSessions,
+  listCardNotes,
+  setCardNote,
+  localDay,
+  backlogHoldsNewBack,
+  backlogNewCap,
+  clozeSides,
+  exerciseView,
+  parseExercise,
+  revealExercise,
+  runExercise,
+  cardRecords,
+  reviewRecords,
+  tombstoneIds,
+  deckOverview,
+  applySync,
+  parseSyncPlan,
+  type CardStateName,
+  type DbCard,
+  type DbCardNote,
+  type ExerciseView,
+  type GradeCall,
+} from "../sdk/index.js";
 
 /**
  * What the Omvida app can ask of the deck: the /study loop's MCP tools, reshaped
@@ -50,6 +72,10 @@ import { exerciseView, parseExercise, revealExercise, runExercise, type Exercise
  * - App-only reads with no MCP tool: `overview`, `cards` (the whole deck),
  *   `stamp` (change tokens to poll), `notes`/`setNote`, `sessions`,
  *   `recentlyStudied`.
+ * - Plain-data methods for callers that are not the app (the study repo's
+ *   scripts, the wiki-viewer): `cardRecords`, `reviewRecords`, `tombstones`,
+ *   `calibration`, `deckOverview` and `syncApply`. Nothing outside this repo
+ *   opens master.db, so these are how anki-sync and the others read and write it.
  *
  * Each method is a thin call into core; this file only reshapes results.
  *
@@ -77,7 +103,7 @@ export interface AppCard {
 
 // The sides as they read. A code card's blanks are hidden on the front and shown
 // on the back, so the app's every view of a card needs no idea of clozes.
-export function toAppCard(card: Omit<PrismaCard, "embedding">, deck: string): AppCard {
+export function toAppCard(card: Omit<DbCard, "embedding">, deck: string): AppCard {
   const exercise = parseExercise(card.exercise);
   return {
     id: card.id,
@@ -94,13 +120,34 @@ export function toAppCard(card: Omit<PrismaCard, "embedding">, deck: string): Ap
 }
 
 /** A card note as the app gets it (card-notes.ts). */
-export function toAppNote(note: CardNote): { cardId: string; body: string; createdAt: string } {
+export function toAppNote(note: DbCardNote): { cardId: string; body: string; createdAt: string } {
   return { cardId: note.cardId, body: note.body, createdAt: note.createdAt.toISOString() };
 }
 
 function str(params: Record<string, unknown>, key: string): string {
   const v = params[key];
   if (typeof v !== "string" || v === "") throw new Error(`missing parameter: ${key}`);
+  return v;
+}
+
+function optStrings(params: Record<string, unknown>, key: string): string[] | undefined {
+  const v = params[key];
+  if (v == null) return undefined;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) throw new Error(`parameter ${key} must be an array of strings`);
+  return v;
+}
+
+function optString(params: Record<string, unknown>, key: string): string | undefined {
+  const v = params[key];
+  if (v == null) return undefined;
+  if (typeof v !== "string") throw new Error(`parameter ${key} must be a string`);
+  return v;
+}
+
+function optBool(params: Record<string, unknown>, key: string): boolean | undefined {
+  const v = params[key];
+  if (v == null) return undefined;
+  if (typeof v !== "boolean") throw new Error(`parameter ${key} must be a boolean`);
   return v;
 }
 
@@ -253,5 +300,32 @@ export function createHandlers(deps: { gradeCall?: GradeCall } = {}): Record<str
 
     /** Recently reviewed card ids with their local day: the dashboard ranks wiki pages by it. */
     recentlyStudied: async (p) => recentlyStudied(optNum(p, "limit") ?? 100),
+
+    // --- Plain-data methods for callers that are not Omvida: the study repo's
+    // scripts and the wiki-viewer, which used to read and write master.db with SQL.
+    // Datetimes are ISO-8601 UTC strings.
+
+    /** Whole cards without the embedding: `ids`, `inheritedFrom` and `includeSuspended` (default true) narrow it. */
+    cardRecords: async (p) =>
+      cardRecords({
+        ids: optStrings(p, "ids"),
+        inheritedFrom: optString(p, "inheritedFrom"),
+        includeSuspended: optBool(p, "includeSuspended"),
+      }),
+
+    /** Review history, oldest first; of `cardIds` or of every card. */
+    reviewRecords: async (p) => reviewRecords(optStrings(p, "cardIds")),
+
+    /** Ids of cards deleted here (the tombstones anki-sync reads). */
+    tombstones: async () => tombstoneIds(),
+
+    /** What the `check_calibration` tool returns, field for field. */
+    calibration: async () => checkCalibration(),
+
+    /** Counts of unsuspended cards: total, decks, and per FSRS state. */
+    deckOverview: async () => deckOverview(),
+
+    /** An anki-sync plan applied in one transaction (core/sync-apply.ts). */
+    syncApply: async (p) => applySync(parseSyncPlan(p)),
   };
 }

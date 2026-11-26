@@ -8,7 +8,7 @@ import {
   type SchedulableCard,
   type SchedulerParams,
 } from "./scheduler.js";
-import { dueReviewWhere, NEW_CARD_WHERE } from "./pressure.js";
+import { dueReviewWhere, MIN_NEW_PER_SESSION, NEW_CARD_WHERE } from "./pressure.js";
 import { newBorrowedToday, planAhead, type AheadPlan } from "./study-ahead.js";
 import { isRestDay } from "./rest-days.js";
 import { MS_PER_DAY, startOfLocalDay } from "./days.js";
@@ -281,19 +281,20 @@ export async function startSession(
     reviewQueue.push({ cardId: card.id, reason: "due_review" });
   }
 
-  // Reduce new card allowance when review-heavy
+  // New cards fill the session up to its size (the review cap), and never fewer
+  // than MIN_NEW_PER_SESSION, so a full queue of reviews still brings a couple
+  // in: 20 due make 20 + 2, 8 due make 8 + 12. The day's limit caps both.
   // A rest day brings no new cards (study ahead borrows them instead), and the
   // study days after it give up what it borrowed (rest-days.ts).
   const borrowed = await newBorrowedToday(params, saved.newPerDay, now);
-  let maxNew = isRestDay(params.easyDays, now)
+  const dailyNewLeft = isRestDay(params.easyDays, now)
     ? 0
-    : Math.min(config.maxNewCardsPerSession, Math.max(0, saved.newPerDay - today.newCards - borrowed));
+    : Math.max(0, saved.newPerDay - today.newCards - borrowed);
+  const fill = Math.max(MIN_NEW_PER_SESSION, config.maxReviewCardsPerSession - reviewQueue.length);
+  let maxNew = Math.min(config.maxNewCardsPerSession, fill, dailyNewLeft);
   // Off (Anki's default), new cards count toward the review limit and get only what
   // every due review leaves, not just this session's: a backlog keeps them out.
   if (!saved.newCardsIgnoreReviewLimit) maxNew = Math.min(maxNew, Math.max(0, reviewBudget - dueReviews));
-  if (reviewQueue.length > 10) {
-    maxNew = Math.min(maxNew, 3);
-  }
 
   const newCards = await db.card.findMany({
     where: { ...NEW_CARD_WHERE, ...scope },

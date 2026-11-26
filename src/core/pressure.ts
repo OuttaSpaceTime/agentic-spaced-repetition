@@ -82,10 +82,32 @@ async function newAvailableCount(): Promise<number> {
 }
 
 /**
+ * The fewest new cards a study session brings in while the day's new-card
+ * limit leaves room for them (session-service's startSession), so a full queue
+ * of reviews still lets new material in. A review backlog at warn caps a
+ * session at exactly this many (backlogNewCap).
+ */
+export const MIN_NEW_PER_SESSION = 2;
+
+/**
+ * The cap the review backlog puts on a session's new cards: none while it is
+ * ok, the per-session floor at warn, and no new cards at pause. Intake never
+ * caps them (backlogHoldsNewBack says why). /study's Phase 2 table and the
+ * app's startSession both follow it.
+ */
+export function backlogNewCap(pressure: Pick<PressureReport, "flashcardsDue">): number | undefined {
+  const verdict = axisVerdict(pressure.flashcardsDue, WARN_FLASHCARDS, PAUSE_FLASHCARDS);
+  if (verdict === "pause") return 0;
+  if (verdict === "warn") return MIN_NEW_PER_SESSION;
+  return undefined;
+}
+
+/**
  * Whether new cards are held back from studying: by the review backlog's
  * verdict alone. A warn raised by intake (cards added today) is about creating
  * cards; studying the ones already made adds no load, so it must not lock them
- * away. One rule for the app's sessions and the overview's rest-day share.
+ * away. The rule for a rest day's share ahead, in the overview's plan and the
+ * app's session that studies it; regular sessions take backlogNewCap instead.
  */
 export function backlogHoldsNewBack(pressure: Pick<PressureReport, "flashcardsDue">): boolean {
   return axisVerdict(pressure.flashcardsDue, WARN_FLASHCARDS, PAUSE_FLASHCARDS) !== "ok";

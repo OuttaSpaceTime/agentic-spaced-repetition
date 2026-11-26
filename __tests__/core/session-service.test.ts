@@ -81,8 +81,8 @@ describe("session-service", () => {
     });
 
     it("uses defaults when configOverrides contains undefined values", async () => {
-      // Seed more cards than the default cap (5) to verify the limit is applied
-      await seedCards(10);
+      // Seed more cards than the default session size (20) to verify it applies
+      await seedCards(25);
 
       // Simulates MCP call path where arg() returns undefined for unset params
       const session = await startSession({
@@ -91,8 +91,8 @@ describe("session-service", () => {
         practiceFirstMode: undefined,
       });
       expect(session.id).toBeDefined();
-      // Should respect default maxNewCardsPerSession (5), not return all 10
-      expect(session.queue.length).toBe(5);
+      // With nothing due, new cards fill the default session of 20, not all 25
+      expect(session.queue.length).toBe(20);
     });
 
     it("caps new cards at maxNewCardsPerSession", async () => {
@@ -115,28 +115,46 @@ describe("session-service", () => {
       expect(session.queue.length).toBeLessThanOrEqual(10);
     });
 
-    it("reduces new card allowance when review-heavy (>10 reviews)", async () => {
-      const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      // 12 review cards due
-      await seedCards(12, {
-        state: State.Review,
-        due: past,
-        stability: 5,
-        lastReview: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-      });
-      // 10 new cards
-      await seedCards(10);
+    describe("new cards fill the session", () => {
+      const past = () => new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const dueReviews = (n: number) =>
+        seedCards(n, { state: State.Review, due: past(), stability: 5, lastReview: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) });
 
-      const session = await startSession({
-        maxNewCardsPerSession: 5,
-        maxReviewCardsPerSession: 15,
+      it("fills up to the session size when fewer reviews are due", async () => {
+        await dueReviews(8);
+        await seedCards(30);
+        const s = await startSession();
+        expect([s.reviewCount, s.newCount]).toEqual([8, 12]);
       });
 
-      // Count new cards in the queue
-      const newCardsInQueue = session.queue.filter(
-        (item) => item.reason === "new_card"
-      ).length;
-      expect(newCardsInQueue).toBeLessThanOrEqual(3);
+      it("adds at least 2 new cards when reviews fill the session", async () => {
+        await dueReviews(25);
+        await seedCards(10);
+        const s = await startSession();
+        expect([s.reviewCount, s.newCount]).toEqual([20, 2]);
+      });
+
+      it("takes the session size from maxReviewCardsPerSession", async () => {
+        await dueReviews(3);
+        await seedCards(10);
+        const s = await startSession({ maxReviewCardsPerSession: 6 });
+        expect([s.reviewCount, s.newCount]).toEqual([3, 3]);
+      });
+
+      it("never goes past an explicit new-card cap, even below the floor", async () => {
+        await dueReviews(25);
+        await seedCards(10);
+        expect((await startSession({ maxNewCardsPerSession: 0 })).newCount).toBe(0);
+        expect((await startSession({ maxNewCardsPerSession: 1 })).newCount).toBe(1);
+      });
+
+      it("never goes past the day's new-card limit, even below the floor", async () => {
+        await getDb().config.upsert({ where: { id: "default" }, create: { id: "default", newPerDay: 1 }, update: { newPerDay: 1 } });
+        await dueReviews(25);
+        await seedCards(10);
+        expect((await startSession()).newCount).toBe(1);
+        await getDb().config.delete({ where: { id: "default" } });
+      });
     });
 
     it("prioritizes unguided cards in practice-first mode", async () => {

@@ -262,12 +262,11 @@ program
   .description("Start an interactive study session")
   .option("-d, --deck <deck>", "Only study cards of this deck")
   .option("-c, --category <name>", "Only study cards of this category")
-  .option("-l, --limit <n>", "Max review cards (new cards stay capped at 5)", "20")
+  .option("-l, --limit <n>", "Session size: due reviews up to n, new cards fill the rest (at least 2)", "20")
   .action(async (opts: { deck?: string; category?: string; limit: string }) => {
     const limit = intOption(opts.limit, "--limit", 1);
     const deck = opts.deck != null ? await requireDeck(opts.deck) : undefined;
     const session = await startSession({
-      maxNewCardsPerSession: Math.min(limit, 5),
       maxReviewCardsPerSession: limit,
       category: opts.category,
       deckId: deck?.id,

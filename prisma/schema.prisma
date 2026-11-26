@@ -114,8 +114,11 @@ model StudySession {
 
 model Config {
   id                       String  @id @default("default")
-  maxNewCardsPerSession    Int     @default(5)
-  maxReviewCardsPerSession Int     @default(15)
+  // A session's size is maxReviewCardsPerSession: due reviews up to it, new
+  // cards filling the rest (at least MIN_NEW_PER_SESSION in pressure.ts).
+  // maxNewCardsPerSession only caps that fill; the day's newPerDay caps it too.
+  maxNewCardsPerSession    Int     @default(20)
+  maxReviewCardsPerSession Int     @default(20)
   requestRetention         Float   @default(0.9)
   practiceFirstMode        Boolean @default(true)
   // Scheduling parameters mirrored from the Anki deck options by anki-sync, so the

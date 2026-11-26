@@ -22,7 +22,7 @@ import { getOverview } from "../core/overview.js";
 import { recentSessions } from "../core/recent-sessions.js";
 import { listCardNotes, setCardNote } from "../core/card-notes.js";
 import { localDay } from "../core/days.js";
-import { backlogHoldsNewBack } from "../core/pressure.js";
+import { backlogHoldsNewBack, backlogNewCap } from "../core/pressure.js";
 import { clozeSides } from "../core/cloze.js";
 import { exerciseView, parseExercise, revealExercise, runExercise, type ExerciseView } from "../core/exercises.js";
 
@@ -33,7 +33,7 @@ import { exerciseView, parseExercise, revealExercise, runExercise, type Exercise
  *
  * These things differ from the MCP tools on purpose:
  * - `startSession` derives `maxNewCards` from the pressure verdict itself
- *   (review backlog ok -> default, warn/pause -> 0; intake never holds them back), exactly as /study's Phase 2 table says,
+ *   (review backlog ok -> default, warn -> 2, pause -> 0; intake never holds them back), exactly as /study's Phase 2 table says,
  *   so the app cannot forget the rule.
  * - `nextCard` returns the leech block as data (core getNextCardOrBlock)
  *   instead of an error. The MCP tool throws, because for Claude the error
@@ -123,18 +123,20 @@ export function createHandlers(deps: { gradeCall?: GradeCall } = {}): Record<str
     // the overview's `ahead` describes, its new cards capped by the same rule.
     startSession: async (p) => {
       const pressure = await checkPressure();
-      // Only the review backlog holds new cards back (pressure.ts).
-      const maxNewCards = backlogHoldsNewBack(pressure) ? 0 : undefined;
-      const session = await startSession({ maxNewCardsPerSession: maxNewCards, ahead: p.ahead === true });
+      // Only the review backlog caps new cards (pressure.ts): 2 at warn, none at
+      // pause. A share ahead keeps none at either, as the overview's plan does.
+      const ahead = p.ahead === true;
+      const maxNewCards = ahead ? (backlogHoldsNewBack(pressure) ? 0 : undefined) : backlogNewCap(pressure);
+      const session = await startSession({ maxNewCardsPerSession: maxNewCards, ahead });
       return {
         sessionId: session.id,
         total: session.queue.length,
         newCards: session.newCount,
         reviewCards: session.reviewCount,
         maxNewCards: maxNewCards ?? null,
-        newHeldBack: maxNewCards === 0 ? pressure.newAvailable : 0,
+        newHeldBack: maxNewCards == null ? 0 : Math.max(0, pressure.newAvailable - session.newCount),
         reviewsHeldBack: session.reviewsHeldBack,
-        ahead: p.ahead === true,
+        ahead,
         pressure,
       };
     },

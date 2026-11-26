@@ -69,11 +69,21 @@ describe("app handlers", () => {
     deckId = (await createDeck("Web")).id;
   });
 
-  it("holds new cards back when pressure is not ok, as /study's Phase 2 table says", async () => {
+  it("caps new cards at 2 under a review backlog at warn, as /study's Phase 2 table says", async () => {
     await seed(25, { state: State.Review });
     await seed(3);
     const s = (await h.startSession({})) as { pressure: { verdict: string }; maxNewCards: number; newCards: number; newHeldBack: number };
     expect(s.pressure.verdict).toBe("warn");
+    expect(s.maxNewCards).toBe(2);
+    expect(s.newCards).toBe(2);
+    expect(s.newHeldBack).toBe(1);
+  });
+
+  it("holds every new card back under a review backlog at pause", async () => {
+    await seed(55, { state: State.Review });
+    await seed(3);
+    const s = (await h.startSession({})) as { pressure: { verdict: string }; maxNewCards: number; newCards: number; newHeldBack: number };
+    expect(s.pressure.verdict).toBe("pause");
     expect(s.maxNewCards).toBe(0);
     expect(s.newCards).toBe(0);
     expect(s.newHeldBack).toBe(3);
@@ -84,7 +94,7 @@ describe("app handlers", () => {
     const s = (await h.startSession({})) as { pressure: { verdict: string }; maxNewCards: number | null; newCards: number; newHeldBack: number };
     expect(s.pressure.verdict).toBe("warn");
     expect(s.maxNewCards).toBeNull();
-    expect(s.newCards).toBe(5);
+    expect(s.newCards).toBe(6);
     expect(s.newHeldBack).toBe(0);
   });
 

@@ -1,5 +1,5 @@
 /**
- * The deck SDK: the only way into flashcard-mcp's core and database.
+ * The deck SDK: the only way into agentic-spaced-repetition's core and database.
  *
  * The three adapters (MCP server, app server, CLI) import from here and from
  * nowhere deeper, so each is transport only: parse a request, call the SDK,

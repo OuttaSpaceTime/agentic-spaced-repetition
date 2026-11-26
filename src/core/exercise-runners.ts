@@ -437,7 +437,7 @@ const postgresSnapshot = once(async (): Promise<string[]> => {
   try {
     const dir = packageDir("@electric-sql/pglite");
     const { version } = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as { version: string };
-    const cache = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "flashcard-mcp");
+    const cache = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "agentic-spaced-repetition");
     const file = join(cache, `pglite-${version}.tar`);
     const mount = ["--ro-bind", file, "/snapshot.tar"];
     if (await access(file).then(() => true, () => false)) return mount;

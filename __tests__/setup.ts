@@ -24,7 +24,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  tempDir = mkdtempSync(join(tmpdir(), "flashcard-mcp-test-"));
+  tempDir = mkdtempSync(join(tmpdir(), "agentic-spaced-repetition-test-"));
   // Built the way every start builds the real database (src/db/prepare.ts).
   testPrisma = createClient(`file:${join(tempDir, "test.db")}`);
   await syncSchema(testPrisma);

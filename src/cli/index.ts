@@ -6,7 +6,7 @@ import { openDeck, databaseFile, getOverview, rescheduleEasyDays, dumpDatabase, 
 const program = new Command();
 
 program
-  .name("master")
+  .name("srs")
   .description("Admin commands for the deck; studying and card work go through the MCP server and the app")
   .version(PACKAGE_VERSION);
 

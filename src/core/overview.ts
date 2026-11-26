@@ -14,7 +14,7 @@ import type { AheadPlan } from "./study-ahead.js";
 /**
  * A rough picture of where studying stands: what is pending, how retention is
  * holding up, how the deck has matured, and the last week of reviews. One call,
- * shared by the Omvida bar panel (through `master overview`) and the Omvida app,
+ * shared by the Omvida bar panel (through `srs overview`) and the Omvida app,
  * so the two never show different numbers.
  *
  * Every figure comes from the same core the MCP tools use. Pressure and

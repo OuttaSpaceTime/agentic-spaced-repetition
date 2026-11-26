@@ -86,7 +86,7 @@ function j(data: unknown) {
 /** The MCP server with every tool registered, not yet connected. */
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "flashcard-mcp", version: PACKAGE_VERSION },
+    { name: "agentic-spaced-repetition", version: PACKAGE_VERSION },
     { capabilities: { tools: {} } }
   );
 

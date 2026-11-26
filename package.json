@@ -1,11 +1,11 @@
 {
-  "name": "flashcard-mcp",
+  "name": "agentic-spaced-repetition",
   "version": "0.1.0",
-  "description": "Self-improving spaced repetition learning system for software engineering mastery",
+  "description": "An FSRS spaced-repetition engine built for agents: a deck SDK with an MCP server, an app server and an admin CLI over it",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "master": "./build/cli/index.js"
+    "srs": "./build/cli/index.js"
   },
   "scripts": {
     "build": "tsc",

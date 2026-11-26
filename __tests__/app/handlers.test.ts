@@ -69,14 +69,14 @@ describe("app handlers", () => {
     deckId = (await createDeck("Web")).id;
   });
 
-  it("caps new cards at 2 under a review backlog at warn, as /study's Phase 2 table says", async () => {
+  it("caps new cards at 3 under a review backlog at warn, as /study's Phase 2 table says", async () => {
     await seed(25, { state: State.Review });
-    await seed(3);
+    await seed(5);
     const s = (await h.startSession({})) as { pressure: { verdict: string }; maxNewCards: number; newCards: number; newHeldBack: number };
     expect(s.pressure.verdict).toBe("warn");
-    expect(s.maxNewCards).toBe(2);
-    expect(s.newCards).toBe(2);
-    expect(s.newHeldBack).toBe(1);
+    expect(s.maxNewCards).toBe(3);
+    expect(s.newCards).toBe(3);
+    expect(s.newHeldBack).toBe(2);
   });
 
   it("holds every new card back under a review backlog at pause", async () => {
@@ -423,13 +423,14 @@ describe("overview helpers", () => {
     expect(bars[16].due).toBe(1);
   });
 
-  it("counts only study days: a weekend near today adds columns, further out it folds into a total", () => {
+  it("leaves rest days out of the chart, columns and totals alike", () => {
     const now = new Date(2026, 10, 26, 12); // a Thursday
     const rest = restDayOf([1, 1, 1, 1, 1, 0, 0]); // Saturday and Sunday
     const history = bucketWeek(
       [
-        { reviewedAt: new Date(2026, 10, 22, 9), rating: 3 }, // Sunday: a column of its own
-        { reviewedAt: new Date(2026, 10, 14, 9), rating: 3 }, // a Saturday inside the 4d total
+        { reviewedAt: new Date(2026, 10, 22, 9), rating: 3 }, // Sunday: left out
+        { reviewedAt: new Date(2026, 10, 13, 9), rating: 3 }, // a Friday in the 4d total
+        { reviewedAt: new Date(2026, 10, 14, 9), rating: 3 }, // the Saturday after it: left out
         { reviewedAt: new Date(2026, 9, 30, 9), rating: 3 }, // Friday, the 8d total's far edge
         { reviewedAt: new Date(2026, 9, 29, 9), rating: 3 }, // past it
       ],
@@ -437,17 +438,22 @@ describe("overview helpers", () => {
       40
     );
     const forecast = bucketForecast(
-      [{ due: new Date(2026, 11, 5, 9) }, { due: new Date(2026, 11, 23, 9) }, { due: new Date(2026, 11, 24, 9) }], // a Saturday in the 2d total, the 8d's far edge, past it
+      [
+        { due: new Date(2026, 11, 4, 9) }, // a Friday in the 2d total
+        { due: new Date(2026, 11, 5, 9) }, // the Saturday after it: left out
+        { due: new Date(2026, 11, 23, 9) }, // the 8d total's far edge
+        { due: new Date(2026, 11, 24, 9) }, // past it
+      ],
       now,
       40
     );
     const bars = loadBars(history, forecast, 0, rest);
     expect(bars.map((b) => b.label)).toEqual([
-      "8d", "4d", "2d", "Th", "Fr", "Sa", "Su", "Mo", "Tu", "We",
+      "8d", "4d", "2d", "Th", "Fr", "Mo", "Tu", "We",
       "Th",
-      "Fr", "Sa", "Su", "Mo", "Tu", "We", "Th", "2d", "4d", "8d",
+      "Fr", "Mo", "Tu", "We", "Th", "2d", "4d", "8d",
     ]);
-    expect(bars.map((b) => b.reviews + b.due)).toEqual([1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1]);
+    expect(bars.map((b) => b.reviews + b.due)).toEqual([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1]);
   });
 
   it("treats no day as a rest day when Easy Days rest every day or none", () => {

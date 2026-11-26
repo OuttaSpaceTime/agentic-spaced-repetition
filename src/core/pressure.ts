@@ -87,7 +87,7 @@ async function newAvailableCount(): Promise<number> {
  * of reviews still lets new material in. A review backlog at warn caps a
  * session at exactly this many (backlogNewCap).
  */
-export const MIN_NEW_PER_SESSION = 2;
+export const MIN_NEW_PER_SESSION = 3;
 
 /**
  * The cap the review backlog puts on a session's new cards: none while it is

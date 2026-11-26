@@ -15,10 +15,13 @@ describe("migrateSessionSizes", () => {
     await getDb().config.deleteMany();
   });
 
-  it("moves a row on the old defaults (5 + 15) to 20 + 20", async () => {
-    await save(5, 15);
+  it.each([
+    [5, 15],
+    [20, 20],
+  ])("moves a row on an old default (%i + %i) to 30 + 30", async (n, r) => {
+    await save(n, r);
     await migrateSessionSizes(getDb());
-    expect(await sizes()).toEqual({ maxNewCardsPerSession: 20, maxReviewCardsPerSession: 20 });
+    expect(await sizes()).toEqual({ maxNewCardsPerSession: 30, maxReviewCardsPerSession: 30 });
   });
 
   it("leaves a row set to anything else alone", async () => {

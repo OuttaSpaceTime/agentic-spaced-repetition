@@ -101,10 +101,10 @@ export function createServer(): McpServer {
     "start_session",
     {
       description:
-        "Start a study session. Returns sessionId, queueLength and queue (items of {cardId, reason}). The queue holds due review cards, lowest recall probability first, up to maxReviewCards (the session's size), followed by New cards filling the session up to that size and never fewer than 2 (20 due make 20 + 2, 8 due make 8 + 12), at most maxNewCards; both are also held to the Anki daily limits mirrored into Config (new cards per day, reviews per day, and new cards counting toward the review limit unless newCardsIgnoreReviewLimit); with practiceFirst, unguided New cards move to the front. It does not consult check_pressure. Starting a session deletes every open session that has no reviews yet, so their session ids stop working.",
+        "Start a study session. Returns sessionId, queueLength and queue (items of {cardId, reason}). The queue holds due review cards, lowest recall probability first, up to maxReviewCards (the session's size), followed by New cards filling the session up to that size and never fewer than 3 (30 due make 30 + 3, 8 due make 8 + 22), at most maxNewCards; both are also held to the Anki daily limits mirrored into Config (new cards per day, reviews per day, and new cards counting toward the review limit unless newCardsIgnoreReviewLimit); with practiceFirst, unguided New cards move to the front. It does not consult check_pressure. Starting a session deletes every open session that has no reviews yet, so their session ids stop working.",
       inputSchema: {
-        maxNewCards: z.number().optional().describe("Cap on new cards, below the fill (default 20, i.e. no cap beyond the fill)"),
-        maxReviewCards: z.number().optional().describe("Session size: max due review cards, which new cards fill up to (default 20)"),
+        maxNewCards: z.number().optional().describe("Cap on new cards, below the fill (default 30, i.e. no cap beyond the fill)"),
+        maxReviewCards: z.number().optional().describe("Session size: max due review cards, which new cards fill up to (default 30)"),
         practiceFirst: z.boolean().optional().describe("Prioritize unguided/exercise cards (default true)"),
         category: z
           .string()

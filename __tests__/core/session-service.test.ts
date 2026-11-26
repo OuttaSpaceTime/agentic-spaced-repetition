@@ -81,8 +81,10 @@ describe("session-service", () => {
     });
 
     it("uses defaults when configOverrides contains undefined values", async () => {
-      // Seed more cards than the default session size (20) to verify it applies
-      await seedCards(25);
+      // Seed more cards than the default session size (30) to verify it applies,
+      // with a daily new-card limit above it
+      await getDb().config.upsert({ where: { id: "default" }, create: { id: "default", newPerDay: 100 }, update: { newPerDay: 100 } });
+      await seedCards(35);
 
       // Simulates MCP call path where arg() returns undefined for unset params
       const session = await startSession({
@@ -91,8 +93,9 @@ describe("session-service", () => {
         practiceFirstMode: undefined,
       });
       expect(session.id).toBeDefined();
-      // With nothing due, new cards fill the default session of 20, not all 25
-      expect(session.queue.length).toBe(20);
+      // With nothing due, new cards fill the default session of 30, not all 35
+      expect(session.queue.length).toBe(30);
+      await getDb().config.delete({ where: { id: "default" } });
     });
 
     it("caps new cards at maxNewCardsPerSession", async () => {
@@ -121,17 +124,19 @@ describe("session-service", () => {
         seedCards(n, { state: State.Review, due: past(), stability: 5, lastReview: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) });
 
       it("fills up to the session size when fewer reviews are due", async () => {
+        await getDb().config.upsert({ where: { id: "default" }, create: { id: "default", newPerDay: 100 }, update: { newPerDay: 100 } });
         await dueReviews(8);
         await seedCards(30);
         const s = await startSession();
-        expect([s.reviewCount, s.newCount]).toEqual([8, 12]);
+        expect([s.reviewCount, s.newCount]).toEqual([8, 22]);
+        await getDb().config.delete({ where: { id: "default" } });
       });
 
-      it("adds at least 2 new cards when reviews fill the session", async () => {
-        await dueReviews(25);
+      it("adds at least 3 new cards when reviews fill the session", async () => {
+        await dueReviews(35);
         await seedCards(10);
         const s = await startSession();
-        expect([s.reviewCount, s.newCount]).toEqual([20, 2]);
+        expect([s.reviewCount, s.newCount]).toEqual([30, 3]);
       });
 
       it("takes the session size from maxReviewCardsPerSession", async () => {

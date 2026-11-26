@@ -282,8 +282,8 @@ export async function startSession(
   }
 
   // New cards fill the session up to its size (the review cap), and never fewer
-  // than MIN_NEW_PER_SESSION, so a full queue of reviews still brings a couple
-  // in: 20 due make 20 + 2, 8 due make 8 + 12. The day's limit caps both.
+  // than MIN_NEW_PER_SESSION, so a full queue of reviews still brings a few
+  // in: 30 due make 30 + 3, 8 due make 8 + 22. The day's limit caps both.
   // A rest day brings no new cards (study ahead borrows them instead), and the
   // study days after it give up what it borrowed (rest-days.ts).
   const borrowed = await newBorrowedToday(params, saved.newPerDay, now);

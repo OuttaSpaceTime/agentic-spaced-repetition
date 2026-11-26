@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { State } from "ts-fsrs";
 import { createHandlers, toAppCard } from "../../src/app/handlers.js";
 import { dispatch } from "../../src/app/server.js";
-import { bucketForecast, bucketWeek, loadBars } from "../../src/core/overview.js";
+import { bucketForecast, bucketWeek, loadBars, restDayOf } from "../../src/core/overview.js";
 import { localDay } from "../../src/core/days.js";
 import { createCard, createCodeCard, updateCard, updateCodeCard } from "../../src/core/card-service.js";
 import { createDeck } from "../../src/core/deck-service.js";
@@ -421,6 +421,38 @@ describe("overview helpers", () => {
     expect(bars[8]).toEqual({ label: "Tu", reviews: 1, again: 1, due: 3, today: true });
     expect(bars[9].due).toBe(1);
     expect(bars[16].due).toBe(1);
+  });
+
+  it("counts only study days: a weekend near today adds columns, further out it folds into a total", () => {
+    const now = new Date(2026, 10, 26, 12); // a Thursday
+    const rest = restDayOf([1, 1, 1, 1, 1, 0, 0]); // Saturday and Sunday
+    const history = bucketWeek(
+      [
+        { reviewedAt: new Date(2026, 10, 22, 9), rating: 3 }, // Sunday: a column of its own
+        { reviewedAt: new Date(2026, 10, 14, 9), rating: 3 }, // a Saturday inside the 4d total
+        { reviewedAt: new Date(2026, 9, 30, 9), rating: 3 }, // Friday, the 8d total's far edge
+        { reviewedAt: new Date(2026, 9, 29, 9), rating: 3 }, // past it
+      ],
+      now,
+      40
+    );
+    const forecast = bucketForecast(
+      [{ due: new Date(2026, 11, 5, 9) }, { due: new Date(2026, 11, 23, 9) }, { due: new Date(2026, 11, 24, 9) }], // a Saturday in the 2d total, the 8d's far edge, past it
+      now,
+      40
+    );
+    const bars = loadBars(history, forecast, 0, rest);
+    expect(bars.map((b) => b.label)).toEqual([
+      "8d", "4d", "2d", "Th", "Fr", "Sa", "Su", "Mo", "Tu", "We",
+      "Th",
+      "Fr", "Sa", "Su", "Mo", "Tu", "We", "Th", "2d", "4d", "8d",
+    ]);
+    expect(bars.map((b) => b.reviews + b.due)).toEqual([1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1]);
+  });
+
+  it("treats no day as a rest day when Easy Days rest every day or none", () => {
+    expect(restDayOf([0, 0, 0, 0, 0, 0, 0])("2026-11-28")).toBe(false);
+    expect(restDayOf(undefined)("2026-11-28")).toBe(false);
   });
 
   it("formats a local day", () => {

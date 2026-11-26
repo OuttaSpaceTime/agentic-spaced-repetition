@@ -7,7 +7,8 @@ import { cardMaturity } from "./scheduler.js";
 import type { CardMaturity } from "./types.js";
 import { visibleText } from "./content-rules.js";
 import { localDay, startOfLocalDay, weekdayLabel } from "./days.js";
-import { currentAheadPlan } from "./session-service.js";
+import { currentAheadPlan, currentSchedulerParams } from "./session-service.js";
+import { isRestDay } from "./rest-days.js";
 import type { AheadPlan } from "./study-ahead.js";
 
 /**
@@ -115,35 +116,86 @@ export function bucketForecast(cards: readonly { due: Date }[], now: Date, days:
   return out;
 }
 
-/** Each side of today, nearest first: single days, then ever wider totals. */
+/**
+ * Each side of today, nearest first: single days, then ever wider totals,
+ * counted in study days. A rest day is never one of them: near today it gets a
+ * column of its own on top of the five, further out it folds into the total it
+ * falls in, so a weekend widens the chart instead of taking two of its days.
+ */
 const LOAD_SPANS = [1, 1, 1, 1, 1, 2, 4, 8];
 const LOAD_DAYS = LOAD_SPANS.reduce((sum, n) => sum + n, 0);
 
-function spans<T>(days: readonly T[]): T[][] {
-  let at = 0;
-  return LOAD_SPANS.map((n) => days.slice(at, (at += n)));
+/** No day is a rest day: the chart counts every day. */
+const NO_REST = (): boolean => false;
+
+/**
+ * Whether a YYYY-MM-DD day is a rest day (Easy Days at Minimum, rest-days.ts).
+ * With every weekday a rest day there are no study days to count, so then
+ * none is one here.
+ */
+export function restDayOf(easyDays: readonly number[] | undefined): (day: string) => boolean {
+  const week = Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 5 + i, 12));
+  if (week.every((d) => isRestDay(easyDays, d)) || !week.some((d) => isRestDay(easyDays, d))) return NO_REST;
+  // Noon, so no time zone or DST change can move it onto another day.
+  return (day) => isRestDay(easyDays, new Date(`${day}T12:00:00`));
 }
 
-function spanLabel(run: readonly { day: string }[]): string {
-  return run.length === 1 ? weekdayLabel(run[0].day) : `${run.length}d`;
+/** The calendar days one side of today needs to hold the chart's study days. */
+function loadCalendarDays(now: Date, rest: (day: string) => boolean, direction: 1 | -1): number {
+  let days = 0;
+  for (let study = 0; study < LOAD_DAYS; ) {
+    days += 1;
+    if (!rest(localDay(startOfLocalDay(now, direction * days)))) study += 1;
+  }
+  return days;
+}
+
+function spans<T extends { day: string }>(days: readonly T[], rest: (day: string) => boolean): T[][] {
+  const out: T[][] = [];
+  let at = 0;
+  for (const n of LOAD_SPANS) {
+    if (n === 1) {
+      // A study day, after the rest days before it as columns of their own.
+      while (at < days.length && rest(days[at].day)) out.push([days[at++]]);
+      if (at < days.length) out.push([days[at++]]);
+      continue;
+    }
+    const run: T[] = [];
+    for (let study = 0; at < days.length && study < n; at++) {
+      if (!rest(days[at].day)) study += 1;
+      run.push(days[at]);
+    }
+    if (run.length > 0) out.push(run);
+  }
+  return out;
+}
+
+function spanLabel(run: readonly { day: string }[], rest: (day: string) => boolean): string {
+  return run.length === 1 ? weekdayLabel(run[0].day) : `${run.filter((d) => !rest(d.day)).length}d`;
 }
 
 /**
  * The review chart the Omvida app and bar panel both draw: the days behind
  * today, today, the days ahead. `history` is oldest first and ends today;
- * `forecast` starts tomorrow. Grouped here so the two can never differ.
+ * `forecast` starts tomorrow; `rest` says which days are rest days (restDayOf).
+ * Grouped here so the two can never differ.
  */
-export function loadBars(history: readonly DayCount[], forecast: readonly ForecastDay[], dueToday: number): LoadBar[] {
+export function loadBars(
+  history: readonly DayCount[],
+  forecast: readonly ForecastDay[],
+  dueToday: number,
+  rest: (day: string) => boolean = NO_REST,
+): LoadBar[] {
   const today = history[history.length - 1];
-  const behind = spans([...history.slice(0, -1)].reverse()).map((run) => ({
-    label: spanLabel(run),
+  const behind = spans([...history.slice(0, -1)].reverse(), rest).map((run) => ({
+    label: spanLabel(run, rest),
     reviews: run.reduce((sum, d) => sum + d.reviews, 0),
     again: run.reduce((sum, d) => sum + d.again, 0),
     due: 0,
     today: false,
   }));
-  const ahead = spans(forecast).map((run) => ({
-    label: spanLabel(run),
+  const ahead = spans(forecast, rest).map((run) => ({
+    label: spanLabel(run, rest),
     reviews: 0,
     again: 0,
     due: run.reduce((sum, d) => sum + d.due, 0),
@@ -159,6 +211,9 @@ export function loadBars(history: readonly DayCount[], forecast: readonly Foreca
 export async function getOverview(opts: { pendingLimit?: number; now?: Date } = {}): Promise<Overview> {
   const db = getDb();
   const now = opts.now ?? new Date();
+  const rest = restDayOf((await currentSchedulerParams()).easyDays);
+  const daysBehind = loadCalendarDays(now, rest, 1);
+  const daysAhead = loadCalendarDays(now, rest, -1);
 
   const [pressure, calibration, streak, cards, reviews, pending] = await Promise.all([
     checkPressure(),
@@ -166,7 +221,7 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
     getStudyStreak(now),
     db.card.findMany({ where: { suspended: false }, select: { state: true, interval: true, due: true } }),
     db.review.findMany({
-      where: { reviewedAt: { gte: startOfLocalDay(now, LOAD_DAYS) } },
+      where: { reviewedAt: { gte: startOfLocalDay(now, daysBehind) } },
       select: { reviewedAt: true, rating: true },
     }),
     db.card.findMany({
@@ -186,7 +241,7 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
 
   const week = bucketWeek(reviews, now);
   // A New card's `due` is only its creation time: it has no schedule yet.
-  const forecast = bucketForecast(cards.filter((c) => c.state !== State.New), now, LOAD_DAYS);
+  const forecast = bucketForecast(cards.filter((c) => c.state !== State.New), now, daysAhead);
 
   return {
     pressure,
@@ -195,7 +250,7 @@ export async function getOverview(opts: { pendingLimit?: number; now?: Date } = 
     totalCards: cards.length,
     maturity,
     week,
-    load: loadBars(bucketWeek(reviews, now, LOAD_DAYS + 1), forecast, pressure.flashcardsDue),
+    load: loadBars(bucketWeek(reviews, now, daysBehind + 1), forecast, pressure.flashcardsDue, rest),
     reviewedToday: week[week.length - 1]?.reviews ?? 0,
     pending: pending.map((c) => ({ deck: c.deck.name, text: visibleText(c.front), lapses: c.lapses })),
     ahead,
